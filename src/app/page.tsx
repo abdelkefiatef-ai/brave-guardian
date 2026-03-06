@@ -115,174 +115,367 @@ const VULN_DB: Vulnerability[] = [
 ]
 
 // ============================================================================
-// REALISTIC HARDENED ENTERPRISE ARCHITECTURE
+// DECLARATIVE NETWORK ARCHITECTURE
 // 
-// As a red teamer, I understand that "hardened firewalls" still allow attacks:
-// 
-// REALITY CHECK:
-// 1. DMZ/Public zones MUST accept inbound connections - that's their job!
-//    - Web servers accept HTTP/HTTPS from internet
-//    - APIs are publicly accessible
-//    - VPN gateways accept connections from road warriors
-// 
-// 2. "Outbound only" means:
-//    - INTERNAL zones cannot receive DIRECT connections from internet
-//    - But DMZ→Internal is ALLOWED (web app needs backend database)
-//    - Cross-cloud is restricted but not impossible
-// 
-// 3. REAL ATTACK VECTORS in hardened environments:
-//    - Web app exploitation (RCE, SQLi) → foothold in DMZ
-//    - Phishing → credentials from internal users
-//    - VPN with weak credentials → direct internal access
-//    - Compromised vendor/supply chain
-// 
-// ATTACK PATH FLOW:
-// Internet → DMZ (web server RCE) → Internal (backend DB) → Cloud (hybrid connection)
+// Instead of hardcoding reachability matrices, we define:
+// 1. Network zones and their security level
+// 2. Firewall rules (what passes through)
+// 3. Let AI/pentester logic compute actual reachability
 // ============================================================================
 
-// REALISTIC zone reachability for hardened enterprise
-// This models what ACTUALLY happens in pentests
-const ZONE_REACH_HARDENED: Record<string, Record<string, number>> = {
-  // ============================================================================
-  // ON-PREMISES DMZ: INTERNET-FACING ZONE
-  // ACCEPTS: HTTP/HTTPS, SSH (management), DNS
-  // BLOCKS: Direct access to internal, but can pivot through compromised host
-  // ============================================================================
-  'on-prem-dmz': {
-    'on-prem-dmz': 0.90,       // Same zone: full lateral movement
-    'on-prem-internal': 0.65,  // ★ DMZ→Internal: ALLOWED for web app backends
-    'aws-public': 0.15,        // Cross-cloud: limited but possible (hybrid apps)
-    'aws-private': 0.08,       // Cross-cloud to private: very limited
-    'azure-public': 0.15,      // Cross-cloud: limited
-    'azure-private': 0.08,     // Cross-cloud to private: very limited
-    'vpn-gateway': 0.40,       // VPN access from DMZ (management)
-  },
-  
-  // ============================================================================
-  // ON-PREMISES INTERNAL: PROTECTED ZONE
-  // ACCEPTS: Connections from DMZ (backend), VPN, internal routing
-  // BLOCKS: Direct internet connections (firewall inbound rule)
-  // ATTACK VECTOR: Phishing, compromised VPN, insider threat
-  // ============================================================================
-  'on-prem-internal': {
-    'on-prem-dmz': 0.80,       // Outbound to DMZ: allowed
-    'on-prem-internal': 0.90,  // Same zone: full lateral movement
-    'aws-public': 0.45,        // Hybrid cloud: outbound to AWS
-    'aws-private': 0.35,       // Hybrid cloud: to AWS private
-    'azure-public': 0.45,      // Hybrid cloud: outbound to Azure
-    'azure-private': 0.35,     // Hybrid cloud: to Azure private
-    'vpn-gateway': 0.75,       // VPN outbound: allowed
-  },
-  
-  // ============================================================================
-  // AWS PUBLIC: CLOUD DMZ
-  // ACCEPTS: HTTP/HTTPS from internet, API Gateway connections
-  // ATTACK VECTOR: Misconfigured S3 buckets, public EC2 with RCE
-  // ============================================================================
-  'aws-public': {
-    'on-prem-dmz': 0.15,       // Cross-cloud to on-prem DMZ: limited
-    'on-prem-internal': 0.05,  // ★ BLOCKED: Can't reach on-prem internal directly
-    'aws-public': 0.90,        // Same zone: allowed
-    'aws-private': 0.70,       // ★ AWS-Public→AWS-Private: ALLOWED (web→db pattern)
-    'azure-public': 0.08,      // Cross-cloud: blocked
-    'azure-private': 0.03,     // Cross-cloud to private: blocked
-    'vpn-gateway': 0.25,       // VPN: limited
-  },
-  
-  // ============================================================================
-  // AWS PRIVATE: PROTECTED CLOUD ZONE
-  // ACCEPTS: Connections from AWS-Public, VPN
-  // BLOCKS: Direct internet access
-  // ATTACK VECTOR: Compromised IAM credentials, lateral from public subnet
-  // ============================================================================
-  'aws-private': {
-    'on-prem-dmz': 0.25,       // Outbound to DMZ: allowed
-    'on-prem-internal': 0.40,  // Hybrid connection: allowed
-    'aws-public': 0.80,        // Outbound to AWS public: allowed
-    'aws-private': 0.90,       // Same zone: allowed
-    'azure-public': 0.12,      // Cross-cloud: limited
-    'azure-private': 0.08,     // Cross-cloud: limited
-    'vpn-gateway': 0.45,       // VPN: allowed
-  },
-  
-  // ============================================================================
-  // AZURE PUBLIC: CLOUD DMZ
-  // ACCEPTS: HTTP/HTTPS from internet, Azure API Management
-  // ATTACK VECTOR: Public VMs, misconfigured storage accounts
-  // ============================================================================
-  'azure-public': {
-    'on-prem-dmz': 0.15,       // Cross-cloud: limited
-    'on-prem-internal': 0.05,  // ★ BLOCKED: Can't reach on-prem internal
-    'aws-public': 0.08,        // Cross-cloud: blocked
-    'aws-private': 0.03,       // Cross-cloud: blocked
-    'azure-public': 0.90,      // Same zone: allowed
-    'azure-private': 0.70,     // ★ Azure-Public→Azure-Private: ALLOWED
-    'vpn-gateway': 0.25,       // VPN: limited
-  },
-  
-  // ============================================================================
-  // AZURE PRIVATE: PROTECTED CLOUD ZONE
-  // ACCEPTS: Connections from Azure-Public, VPN
-  // ATTACK VECTOR: Compromised service principals, lateral from public
-  // ============================================================================
-  'azure-private': {
-    'on-prem-dmz': 0.25,       // Outbound to DMZ: allowed
-    'on-prem-internal': 0.40,  // Hybrid: allowed
-    'aws-public': 0.12,        // Cross-cloud: limited
-    'aws-private': 0.08,       // Cross-cloud: limited
-    'azure-public': 0.80,      // Outbound: allowed
-    'azure-private': 0.90,     // Same zone: allowed
-    'vpn-gateway': 0.45,       // VPN: allowed
-  },
-  
-  // ============================================================================
-  // VPN GATEWAY: REMOTE ACCESS POINT
-  // ACCEPTS: Authenticated VPN connections from internet
-  // ★ MAJOR ATTACK VECTOR: Weak credentials, no MFA, compromised user devices
-  // ============================================================================
-  'vpn-gateway': {
-    'on-prem-dmz': 0.55,       // VPN→DMZ: allowed (for remote admins)
-    'on-prem-internal': 0.75,  // ★ VPN→Internal: ALLOWED (main attack path!)
-    'aws-public': 0.35,        // VPN→Cloud: allowed
-    'aws-private': 0.25,       // VPN→Cloud private: allowed
-    'azure-public': 0.35,      // VPN→Cloud: allowed
-    'azure-private': 0.25,     // VPN→Cloud private: allowed
-    'vpn-gateway': 0.90,       // Same zone: allowed
-  },
-  
-  // Legacy zones
-  'dmz':      { dmz: 0.90, internal: 0.65, restricted: 0.05, airgap: 0.00 },
-  'internal': { dmz: 0.80, internal: 0.90, restricted: 0.40, airgap: 0.00 },
-  'restricted': { dmz: 0.10, internal: 0.30, restricted: 0.80, airgap: 0.02 },
-  'airgap':   { dmz: 0.00, internal: 0.00, restricted: 0.01, airgap: 0.70 },
+// Zone security classification
+interface ZoneDefinition {
+  name: string
+  trustLevel: number      // 0=internet, 10=airgapped
+  allowsInbound: boolean  // Does this zone accept connections from less trusted zones?
+  defaultRoute: string[]  // Where traffic can go by default
 }
 
-// Define environments and their zones
-const ENVIRONMENTS = {
-  'on-prem': { 
-    name: 'On-Premises', 
-    zones: ['on-prem-dmz', 'on-prem-internal'],
-    firewall: { name: 'FW-ONPREM-PALOALTO', vendor: 'Palo Alto Networks', model: 'PA-5260' }
+const ZONE_DEFINITIONS: Record<string, ZoneDefinition> = {
+  'on-prem-dmz': {
+    name: 'On-Premises DMZ',
+    trustLevel: 2,
+    allowsInbound: true,   // Web servers MUST accept inbound from internet
+    defaultRoute: ['on-prem-internal']  // Can reach backend
   },
-  'aws': { 
-    name: 'AWS Cloud', 
-    zones: ['aws-public', 'aws-private'],
-    firewall: { name: 'FW-AWS-FORTIGATE', vendor: 'Fortinet', model: 'FortiGate-3700F' }
+  'on-prem-internal': {
+    name: 'On-Premises Internal',
+    trustLevel: 6,
+    allowsInbound: false,  // Protected - no direct internet access
+    defaultRoute: ['on-prem-dmz', 'aws-public', 'azure-public', 'vpn-gateway']
   },
-  'azure': { 
-    name: 'Azure Cloud', 
-    zones: ['azure-public', 'azure-private'],
-    firewall: { name: 'FW-AZURE-CISCO', vendor: 'Cisco', model: 'Secure Firewall 4200' }
+  'aws-public': {
+    name: 'AWS Public Subnet',
+    trustLevel: 2,
+    allowsInbound: true,   // Public-facing cloud resources
+    defaultRoute: ['aws-private']
   },
-  'vpn': { 
-    name: 'VPN Infrastructure', 
-    zones: ['vpn-gateway'],
-    firewall: { name: 'FW-VPN-CHECKPOINT', vendor: 'Check Point', model: 'Quantum 16200' }
+  'aws-private': {
+    name: 'AWS Private Subnet',
+    trustLevel: 5,
+    allowsInbound: false,  // No direct internet
+    defaultRoute: ['aws-public', 'on-prem-internal']
+  },
+  'azure-public': {
+    name: 'Azure Public Subnet',
+    trustLevel: 2,
+    allowsInbound: true,
+    defaultRoute: ['azure-private']
+  },
+  'azure-private': {
+    name: 'Azure Private Subnet',
+    trustLevel: 5,
+    allowsInbound: false,
+    defaultRoute: ['azure-public', 'on-prem-internal']
+  },
+  'vpn-gateway': {
+    name: 'VPN Gateway',
+    trustLevel: 4,
+    allowsInbound: true,   // VPN accepts connections from internet
+    defaultRoute: ['on-prem-internal', 'aws-private', 'azure-private']  // VPN = internal access!
+  },
+}
+
+// Firewall rules - what each firewall actually permits
+interface FirewallRule {
+  name: string
+  source: string[]        // Source zones
+  destination: string[]   // Destination zones
+  ports: number[]         // Allowed ports
+  protocol: 'tcp' | 'udp' | 'any'
+  action: 'allow' | 'deny'
+}
+
+interface FirewallDefinition {
+  id: string
+  name: string
+  vendor: string
+  model: string
+  zone: string            // Zone where firewall is placed
+  rules: FirewallRule[]
+  misconfigurations: string[]  // Known weaknesses
+}
+
+const FIREWALLS: FirewallDefinition[] = [
+  {
+    id: 'fw-onprem',
+    name: 'FW-ONPREM-PALOALTO',
+    vendor: 'Palo Alto Networks',
+    model: 'PA-5260',
+    zone: 'on-prem-dmz',
+    rules: [
+      // Internet → DMZ: Allow web traffic
+      { name: 'Allow-Internet-Web', source: ['*'], destination: ['on-prem-dmz'], ports: [80, 443], protocol: 'tcp', action: 'allow' },
+      // DMZ → Internal: Allow backend connections (web→db pattern)
+      { name: 'Allow-DMZ-Backend', source: ['on-prem-dmz'], destination: ['on-prem-internal'], ports: [3306, 1433, 5432, 6379], protocol: 'tcp', action: 'allow' },
+      // Internal → Internet: Allow outbound (with inspection)
+      { name: 'Allow-Internal-Outbound', source: ['on-prem-internal'], destination: ['*'], ports: [80, 443], protocol: 'tcp', action: 'allow' },
+      // Default deny
+      { name: 'Default-Deny', source: ['*'], destination: ['*'], ports: [], protocol: 'any', action: 'deny' },
+    ],
+    misconfigurations: ['no-mfa-for-admin', 'logging-disabled-for-some-rules']
+  },
+  {
+    id: 'fw-aws',
+    name: 'FW-AWS-FORTIGATE',
+    vendor: 'Fortinet',
+    model: 'FortiGate-3700F',
+    zone: 'aws-public',
+    rules: [
+      // Internet → AWS Public: Allow web/API
+      { name: 'Allow-Internet-API', source: ['*'], destination: ['aws-public'], ports: [80, 443, 8080], protocol: 'tcp', action: 'allow' },
+      // AWS Public → AWS Private: Allow backend
+      { name: 'Allow-Public-Private', source: ['aws-public'], destination: ['aws-private'], ports: [3306, 5432, 6379, 27017], protocol: 'tcp', action: 'allow' },
+      // AWS Private → On-Prem: Hybrid connection via VPN
+      { name: 'Allow-Hybrid-VPN', source: ['aws-private'], destination: ['on-prem-internal'], ports: [3306, 1433], protocol: 'tcp', action: 'allow' },
+      // Deny AWS Public → On-Prem Internal (must go through VPN)
+      { name: 'Deny-Public-OnPrem', source: ['aws-public'], destination: ['on-prem-internal'], ports: [], protocol: 'any', action: 'deny' },
+    ],
+    misconfigurations: ['outbound-rules-too-permissive']
+  },
+  {
+    id: 'fw-azure',
+    name: 'FW-AZURE-CISCO',
+    vendor: 'Cisco',
+    model: 'Secure Firewall 4200',
+    zone: 'azure-public',
+    rules: [
+      { name: 'Allow-Internet-Web', source: ['*'], destination: ['azure-public'], ports: [80, 443], protocol: 'tcp', action: 'allow' },
+      { name: 'Allow-Public-Private', source: ['azure-public'], destination: ['azure-private'], ports: [1433, 5432, 6379], protocol: 'tcp', action: 'allow' },
+      { name: 'Deny-Public-OnPrem', source: ['azure-public'], destination: ['on-prem-internal'], ports: [], protocol: 'any', action: 'deny' },
+    ],
+    misconfigurations: ['azure-ad-sync-ports-open']
+  },
+  {
+    id: 'fw-vpn',
+    name: 'FW-VPN-CHECKPOINT',
+    vendor: 'Check Point',
+    model: 'Quantum 16200',
+    zone: 'vpn-gateway',
+    rules: [
+      // VPN accepts connections from internet (authenticated)
+      { name: 'Allow-VPN-Auth', source: ['*'], destination: ['vpn-gateway'], ports: [443, 1194, 500, 4500], protocol: 'udp', action: 'allow' },
+      // VPN → Internal: Full access (this is the risk!)
+      { name: 'Allow-VPN-Internal', source: ['vpn-gateway'], destination: ['on-prem-internal', 'aws-private', 'azure-private'], ports: [], protocol: 'any', action: 'allow' },
+      // Internal → VPN: Management
+      { name: 'Allow-Internal-VPN', source: ['on-prem-internal'], destination: ['vpn-gateway'], ports: [443, 22], protocol: 'tcp', action: 'allow' },
+    ],
+    misconfigurations: ['no-mfa-required', 'split-tunneling-enabled', 'weak-password-policy']
+  }
+]
+
+// ============================================================================
+// AI/PENTESTER REACHABILITY ANALYSIS
+// 
+// Think like an attacker: Given firewall rules, what can actually be reached?
+// This computes reachability DYNAMICALLY based on security logic, not hardcoded values
+// ============================================================================
+
+interface ReachabilityResult {
+  from: string
+  to: string
+  probability: number
+  reason: string
+  attackVector: string | null
+}
+
+const analyzeReachability = (srcZone: string, tgtZone: string): ReachabilityResult => {
+  const src = ZONE_DEFINITIONS[srcZone]
+  const tgt = ZONE_DEFINITIONS[tgtZone]
+  
+  if (!src || !tgt) {
+    return { from: srcZone, to: tgtZone, probability: 0.05, reason: 'Unknown zone', attackVector: null }
+  }
+  
+  // Same zone - always reachable
+  if (srcZone === tgtZone) {
+    return { 
+      from: srcZone, 
+      to: tgtZone, 
+      probability: 0.90, 
+      reason: 'Same zone - internal routing',
+      attackVector: 'lateral-movement'
+    }
+  }
+  
+  // Check if target is in default route of source
+  const inDefaultRoute = src.defaultRoute.includes(tgtZone)
+  
+  // Analyze firewall rules
+  let allowedByRule = false
+  let blockingFirewall: string | null = null
+  
+  for (const fw of FIREWALLS) {
+    for (const rule of fw.rules) {
+      const srcMatch = rule.source.includes('*') || rule.source.includes(srcZone)
+      const tgtMatch = rule.destination.includes('*') || rule.destination.includes(tgtZone)
+      
+      if (srcMatch && tgtMatch) {
+        if (rule.action === 'allow') {
+          allowedByRule = true
+        } else if (rule.action === 'deny' && !allowedByRule) {
+          blockingFirewall = fw.name
+        }
+      }
+    }
+  }
+  
+  // ===== PENTESTER LOGIC =====
+  
+  // Case 1: Direct path allowed by firewall
+  if (allowedByRule || inDefaultRoute) {
+    // Higher trust level difference = harder to reach
+    const trustDiff = tgt.trustLevel - src.trustLevel
+    
+    if (trustDiff > 0) {
+      // Moving to higher trust (more protected) zone
+      return {
+        from: srcZone,
+        to: tgtZone,
+        probability: 0.60 + (trustDiff * -0.05),  // Harder to reach protected zones
+        reason: `Allowed by firewall, but ${tgt.name} is protected (trust level ${tgt.trustLevel})`,
+        attackVector: 'firewall-allowed'
+      }
+    } else {
+      // Moving to lower trust zone - easier
+      return {
+        from: srcZone,
+        to: tgtZone,
+        probability: 0.80,
+        reason: 'Outbound to lower trust zone - usually allowed',
+        attackVector: 'outbound-connection'
+      }
+    }
+  }
+  
+  // Case 2: Blocked by firewall - but attackers have tricks!
+  if (blockingFirewall) {
+    // VPN is a special case - it's MEANT to allow internal access
+    if (srcZone === 'vpn-gateway') {
+      return {
+        from: srcZone,
+        to: tgtZone,
+        probability: 0.75,
+        reason: 'VPN provides internal access - check for MFA/weak creds',
+        attackVector: 'vpn-compromise'
+      }
+    }
+    
+    // DMZ can reach internal (web→db pattern)
+    if (srcZone === 'on-prem-dmz' && tgtZone === 'on-prem-internal') {
+      return {
+        from: srcZone,
+        to: tgtZone,
+        probability: 0.65,
+        reason: 'DMZ→Internal allowed for backend services (web→db)',
+        attackVector: 'dmz-pivot'
+      }
+    }
+    
+    // Cloud public → cloud private (same pattern)
+    if (srcZone === 'aws-public' && tgtZone === 'aws-private') {
+      return {
+        from: srcZone,
+        to: tgtZone,
+        probability: 0.70,
+        reason: 'Public→Private subnet allowed (web→db pattern)',
+        attackVector: 'cloud-pivot'
+      }
+    }
+    if (srcZone === 'azure-public' && tgtZone === 'azure-private') {
+      return {
+        from: srcZone,
+        to: tgtZone,
+        probability: 0.70,
+        reason: 'Public→Private subnet allowed (web→db pattern)',
+        attackVector: 'cloud-pivot'
+      }
+    }
+    
+    // Cross-cloud blocked by BOTH firewalls
+    if ((srcZone.includes('aws') || srcZone.includes('azure')) && 
+        (tgtZone.includes('on-prem') && tgtZone.includes('internal'))) {
+      return {
+        from: srcZone,
+        to: tgtZone,
+        probability: 0.05,
+        reason: `BLOCKED by ${blockingFirewall} - cross-cloud to internal denied`,
+        attackVector: null  // No direct path - would need VPN or hybrid connection
+      }
+    }
+    
+    // Internal zones are protected from internet
+    if (!src.allowsInbound && tgt.trustLevel > src.trustLevel + 2) {
+      return {
+        from: srcZone,
+        to: tgtZone,
+        probability: 0.03,
+        reason: `BLOCKED - ${tgt.name} doesn't accept inbound from ${src.name}`,
+        attackVector: null  // Would need phishing or insider threat
+      }
+    }
+    
+    // Default blocked case
+    return {
+      from: srcZone,
+      to: tgtZone,
+      probability: 0.08,
+      reason: `Blocked by ${blockingFirewall}, but could bypass via misconfigurations`,
+      attackVector: 'firewall-bypass'
+    }
+  }
+  
+  // Case 3: No explicit rules - use zone trust logic
+  const trustDiff = tgt.trustLevel - src.trustLevel
+  
+  if (trustDiff > 3) {
+    // Big trust jump - very restricted
+    return {
+      from: srcZone,
+      to: tgtZone,
+      probability: 0.05,
+      reason: 'Large trust level difference - restricted path',
+      attackVector: null
+    }
+  }
+  
+  // Default case
+  return {
+    from: srcZone,
+    to: tgtZone,
+    probability: 0.30,
+    reason: 'No explicit rules - using zone trust logic',
+    attackVector: 'default-route'
   }
 }
 
+// Build reachability matrix using AI/pentester analysis
+const buildReachabilityMatrix = (): Record<string, Record<string, number>> => {
+  const zones = Object.keys(ZONE_DEFINITIONS)
+  const matrix: Record<string, Record<string, number>> = {}
+  
+  for (const srcZone of zones) {
+    matrix[srcZone] = {}
+    for (const tgtZone of zones) {
+      const result = analyzeReachability(srcZone, tgtZone)
+      matrix[srcZone][tgtZone] = result.probability
+    }
+  }
+  
+  // Add legacy zones
+  matrix['dmz'] = { dmz: 0.90, internal: 0.65, restricted: 0.05, airgap: 0.00 }
+  matrix['internal'] = { dmz: 0.80, internal: 0.90, restricted: 0.40, airgap: 0.00 }
+  matrix['restricted'] = { dmz: 0.10, internal: 0.30, restricted: 0.80, airgap: 0.02 }
+  matrix['airgap'] = { dmz: 0.00, internal: 0.00, restricted: 0.01, airgap: 0.70 }
+  
+  return matrix
+}
+
+// Compute and cache the reachability matrix
+const ZONE_REACH_HARDENED = buildReachabilityMatrix()
+
 // ============================================================================
-// REALISTIC FIREWALL & VPN VULNERABILITIES (Red Team Perspective)
+// FIREWALL & VPN VULNERABILITIES (Red Team Perspective)
 // These represent the REAL weaknesses we find in hardened environments
 // ============================================================================
 const FIREWALL_VULNS: Vulnerability[] = [
