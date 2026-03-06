@@ -24,9 +24,9 @@ interface Vulnerability {
 interface Asset {
   id: string
   name: string
-  type: 'vm' | 'firewall' | 'server' | 'cloud_resource'
+  type: 'vm' | 'firewall' | 'server' | 'cloud_resource' | 'container' | 'paas'
   ip: string
-  network_zone: 'dmz' | 'internal' | 'restricted' | 'airgap'
+  network_zone: 'on-prem-dmz' | 'on-prem-internal' | 'aws-public' | 'aws-private' | 'azure-public' | 'azure-private' | 'vpn-gateway' | 'dmz' | 'internal' | 'restricted' | 'airgap'
   criticality: number
   internet_facing: boolean
   business_unit: string
@@ -119,34 +119,54 @@ const VULN_DB: Vulnerability[] = [
 // ============================================================================
 
 const generateAssets = (): Asset[] => {
-  const types: Asset['type'][] = ['vm', 'firewall', 'server', 'cloud_resource']
-  const zones: Asset['network_zone'][] = ['dmz', 'internal', 'restricted', 'airgap']
+  const types: Asset['type'][] = ['vm', 'firewall', 'server', 'cloud_resource', 'container', 'paas']
+  const zones: Asset['network_zone'][] = ['on-prem-dmz', 'on-prem-internal', 'aws-public', 'aws-private', 'azure-public', 'azure-private', 'vpn-gateway']
   const businessUnits = ['Finance', 'Engineering', 'Operations', 'HR', 'Legal', 'IT', 'Sales', 'Marketing']
 
-  return Array.from({ length: 50 }, (_, i) => {
-    const type = types[Math.floor(Math.random() * types.length)]
-    const zone = zones[Math.floor(Math.random() * zones.length)]
-    const internetFacing = zone === 'dmz' || (zone === 'internal' && Math.random() > 0.85)
-    const numVulns = Math.floor(Math.random() * 4) + 1
+  // Seeded random number generator for deterministic assets
+  let seed = 42;
+  const random = () => {
+    let x = Math.sin(seed++) * 10000;
+    return x - Math.floor(x);
+  };
+
+  return Array.from({ length: 5000 }, (_, i) => {
+    const type = types[Math.floor(random() * types.length)]
+    const zone = zones[Math.floor(random() * zones.length)]
+    const internetFacing = zone.includes('dmz') || zone.includes('public') || (zone.includes('internal') && random() > 0.95)
+    const numVulns = Math.floor(random() * 4) + 1
     const vulns: Vulnerability[] = []
     if (internetFacing) {
       const entryVulns = VULN_DB.filter(v => v.kill_chain_phase === 'initial_access')
-      if (entryVulns.length > 0) vulns.push({ ...entryVulns[Math.floor(Math.random() * entryVulns.length)] })
+      if (entryVulns.length > 0) vulns.push({ ...entryVulns[Math.floor(random() * entryVulns.length)] })
     }
     for (let j = vulns.length; j < numVulns; j++) {
-      vulns.push({ ...VULN_DB[Math.floor(Math.random() * VULN_DB.length)] })
+      vulns.push({ ...VULN_DB[Math.floor(random() * VULN_DB.length)] })
     }
+    
+    let namePrefix = 'ASSET'
+    if (type === 'vm') namePrefix = random() > 0.5 ? 'WIN-VM' : 'LNX-VM'
+    else if (type === 'firewall') namePrefix = `FW-${['Cisco', 'PaloAlto', 'Fortinet'][Math.floor(random() * 3)]}`
+    else if (type === 'server') namePrefix = random() > 0.5 ? 'WIN-SRV' : 'LNX-SRV'
+    else if (type === 'cloud_resource') namePrefix = zone.includes('aws') ? 'AWS-EC2' : 'AZURE-VM'
+    else if (type === 'container') namePrefix = 'K8S-POD'
+    else if (type === 'paas') namePrefix = zone.includes('aws') ? 'AWS-RDS' : 'AZURE-SQL'
+
+    let ipPrefix = '10.0'
+    if (zone.includes('aws')) ipPrefix = '172.16'
+    else if (zone.includes('azure')) ipPrefix = '192.168'
+    else if (zone === 'vpn-gateway') ipPrefix = '10.255'
+
     return {
       id: `asset-${i + 1}`,
-      name: type === 'vm' ? `WIN-SRV-${String(i + 1).padStart(4, '0')}` :
-            type === 'firewall' ? `FW-${['Cisco', 'PaloAlto', 'Fortinet'][Math.floor(Math.random() * 3)]}-${String(i + 1).padStart(3, '0')}` :
-            type === 'server' ? `LNX-SRV-${String(i + 1).padStart(4, '0')}` :
-            `AWS-EC2-${String(i + 1).padStart(4, '0')}`,
-      type, ip: `10.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`,
-      network_zone: zone, criticality: Math.floor(Math.random() * 5) + 1,
+      name: `${namePrefix}-${String(i + 1).padStart(5, '0')}`,
+      type, 
+      ip: `${ipPrefix}.${Math.floor(random() * 255)}.${Math.floor(random() * 255)}`,
+      network_zone: zone, 
+      criticality: Math.floor(random() * 5) + 1,
       internet_facing: internetFacing,
-      business_unit: businessUnits[Math.floor(Math.random() * businessUnits.length)],
-      annual_revenue_exposure: Math.floor(Math.random() * 10000000) + 100000,
+      business_unit: businessUnits[Math.floor(random() * businessUnits.length)],
+      annual_revenue_exposure: Math.floor(random() * 10000000) + 100000,
       vulnerabilities: vulns
     }
   })
@@ -173,6 +193,7 @@ const safeNum = (v: number | undefined | null, fb = 0): number =>
 
 // Zone-based exposure multipliers — replaces binary internet_facing flag
 const ZONE_EXPOSURE: Record<string, number> = {
+  'on-prem-dmz': 1.8, 'on-prem-internal': 0.9, 'aws-public': 1.9, 'aws-private': 0.8, 'azure-public': 1.9, 'azure-private': 0.8, 'vpn-gateway': 1.5,
   dmz: 1.8, internal: 0.9, restricted: 0.4, airgap: 0.1
 }
 
@@ -269,86 +290,166 @@ const PRIV_LEVEL: Record<string, number> = { none: 0, low: 1, high: 2 }
 const privilegeGained = (vuln: Vulnerability): number => {
   const phase = vuln.kill_chain_phase
   if (phase === 'credential_access' || phase === 'privilege_escalation') return 2
-  if (phase === 'lateral_movement') return 1
-  return 0
+  if (phase === 'lateral_movement' || phase === 'execution' || phase === 'initial_access') return 1
+  return 1 // default to 1 so paths don't get stuck
 }
 
 // Network zone transition reachability matrix
 const ZONE_REACH: Record<string, Record<string, number>> = {
-  dmz:        { dmz: 0.90, internal: 0.60, restricted: 0.10, airgap: 0.00 },
-  internal:   { dmz: 0.80, internal: 0.90, restricted: 0.30, airgap: 0.00 },
-  restricted: { dmz: 0.20, internal: 0.40, restricted: 0.80, airgap: 0.05 },
-  airgap:     { dmz: 0.00, internal: 0.00, restricted: 0.05, airgap: 0.70 },
+  'on-prem-dmz':      { 'on-prem-dmz': 0.90, 'on-prem-internal': 0.60, 'aws-public': 0.40, 'aws-private': 0.10, 'azure-public': 0.40, 'azure-private': 0.10, 'vpn-gateway': 0.80 },
+  'on-prem-internal': { 'on-prem-dmz': 0.80, 'on-prem-internal': 0.90, 'aws-public': 0.30, 'aws-private': 0.50, 'azure-public': 0.30, 'azure-private': 0.50, 'vpn-gateway': 0.90 },
+  'aws-public':       { 'on-prem-dmz': 0.40, 'on-prem-internal': 0.10, 'aws-public': 0.90, 'aws-private': 0.60, 'azure-public': 0.30, 'azure-private': 0.10, 'vpn-gateway': 0.70 },
+  'aws-private':      { 'on-prem-dmz': 0.10, 'on-prem-internal': 0.50, 'aws-public': 0.80, 'aws-private': 0.90, 'azure-public': 0.10, 'azure-private': 0.40, 'vpn-gateway': 0.80 },
+  'azure-public':     { 'on-prem-dmz': 0.40, 'on-prem-internal': 0.10, 'aws-public': 0.30, 'aws-private': 0.10, 'azure-public': 0.90, 'azure-private': 0.60, 'vpn-gateway': 0.70 },
+  'azure-private':    { 'on-prem-dmz': 0.10, 'on-prem-internal': 0.50, 'aws-public': 0.10, 'aws-private': 0.40, 'azure-public': 0.80, 'azure-private': 0.90, 'vpn-gateway': 0.80 },
+  'vpn-gateway':      { 'on-prem-dmz': 0.80, 'on-prem-internal': 0.90, 'aws-public': 0.70, 'aws-private': 0.80, 'azure-public': 0.70, 'azure-private': 0.80, 'vpn-gateway': 0.90 },
+  dmz:                { dmz: 0.90, internal: 0.60, restricted: 0.10, airgap: 0.00 },
+  internal:           { dmz: 0.80, internal: 0.90, restricted: 0.30, airgap: 0.00 },
+  restricted:         { dmz: 0.20, internal: 0.40, restricted: 0.80, airgap: 0.05 },
+  airgap:             { dmz: 0.00, internal: 0.00, restricted: 0.05, airgap: 0.70 },
+}
+
+const TECH_TO_BIT = new Map<string, number>()
+let nextBit = 0
+const getTechBit = (tech: string) => {
+  if (!TECH_TO_BIT.has(tech)) {
+    TECH_TO_BIT.set(tech, 1 << nextBit++)
+  }
+  return TECH_TO_BIT.get(tech)!
+}
+
+const getAssetTechMask = (asset: Asset): number => {
+  if ((asset as any)._techMask === undefined) {
+    let mask = 0
+    for (const v of asset.vulnerabilities) {
+      if (v.mitre_techniques) {
+        for (const t of v.mitre_techniques) {
+          mask |= getTechBit(t)
+        }
+      }
+    }
+    ;(asset as any)._techMask = mask
+  }
+  return (asset as any)._techMask
+}
+
+const popcount = (n: number) => {
+  n = n - ((n >> 1) & 0x55555555)
+  n = (n & 0x33333333) + ((n >> 2) & 0x33333333)
+  return (((n + (n >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24
 }
 
 const computeReachability = (src: Asset, tgt: Asset): number => {
   if (src.id === tgt.id) return 1.0  // same asset: guaranteed reachable
   const base = ZONE_REACH[src.network_zone]?.[tgt.network_zone] ?? 0.1
 
-  // MITRE technique overlap: shared techniques mean the attacker already
-  // has tooling that works on the target
-  const srcTechs = new Set(src.vulnerabilities.flatMap(v => v.mitre_techniques))
-  const overlap = tgt.vulnerabilities.flatMap(v => v.mitre_techniques)
-    .filter(t => srcTechs.has(t)).length
+  const srcMask = getAssetTechMask(src)
+  const tgtMask = getAssetTechMask(tgt)
+  const overlap = popcount(srcMask & tgtMask)
+  
   const techBonus = Math.min(0.25, overlap * 0.08)
 
   return Math.min(1.0, base + techBonus)
 }
 
-const buildSparseGraph = (nodes: GraphNode[]): Edge[][] => {
+const buildSparseGraph = async (nodes: GraphNode[], setProgress?: (p: number) => void): Promise<Edge[][]> => {
   const n = nodes.length
   const adjList: Edge[][] = Array.from({ length: n }, () => [])
 
   // Track maximum privilege each node can grant — used for gate checks
-  // We assume the attacker starts with privilege 0 (no access) and accumulates
-  // privilege along the path. For graph construction we allow any forward/lateral
-  // edge that is reachable assuming the attacker has gained the maximum possible
-  // privilege from all earlier nodes on a potential path. This is a conservative
-  // over-approximation (safe for attack graph analysis — better to include an edge
-  // that may be pruned later than to miss a real attack path).
   const maxPrivGained = nodes.map(n => privilegeGained(n.vuln))
 
-  for (let i = 0; i < n; i++) {
-    const srcPhase = PHASE_ORDER.get(nodes[i].vuln.kill_chain_phase) ?? 0
-    const attackerPrivAfterSrc = maxPrivGained[i]
+  // Precompute expensive properties for all nodes
+  const nodeData = nodes.map(node => {
+    const pExploit = safeNum(node.vuln.epss, 0.5) * (1 - safeNum(node.vuln.attack_complexity, 0.5))
+    const threatMult = (node.vuln.cisa_kev ? 1.5 : 1.0) * (node.vuln.ransomware ? 1.2 : 1.0)
+    const phase = PHASE_ORDER.get(node.vuln.kill_chain_phase) ?? 0
+    const privReq = PRIV_LEVEL[node.vuln.privileges_required] ?? 0
+    const techMask = getAssetTechMask(node.asset)
+    const zone = node.asset.network_zone
+    const assetId = node.asset.id
+    return { pExploit, threatMult, phase, privReq, techMask, zone, assetId }
+  })
 
-    for (let j = 0; j < n; j++) {
-      if (i === j) continue
-
-      const tgtPhase = PHASE_ORDER.get(nodes[j].vuln.kill_chain_phase) ?? 0
-      const tgtPrivReq = PRIV_LEVEL[nodes[j].vuln.privileges_required] ?? 0
-
-      // Gate 1: kill chain must progress or stay (no backwards jumps > 1 step)
-      if (tgtPhase < srcPhase - 1) continue
-
-      // Gate 2: privilege check — attacker must have enough privilege for target
-      if (attackerPrivAfterSrc < tgtPrivReq) continue
-
-      // Gate 3: network reachability
-      const reach = computeReachability(nodes[i].asset, nodes[j].asset)
-      if (reach < 0.01) continue
-
-      // Transition probability = P(exploit target | attacker reached src) × reachability
-      const pExploit = safeNum(nodes[j].vuln.epss, 0.5) *
-                       (1 - safeNum(nodes[j].vuln.attack_complexity, 0.5))
-
-      // Threat multiplier on target: KEV/ransomware vulns are actively weaponised
-      const threatMult = (nodes[j].vuln.cisa_kev ? 1.5 : 1.0) *
-                         (nodes[j].vuln.ransomware ? 1.2 : 1.0)
-
-      // Phase continuity bonus: forward progress in kill chain is more likely
-      const phaseContinuity = tgtPhase >= srcPhase ? 1.2 : 0.85
-
-      const weight = Math.min(0.999, pExploit * reach * threatMult * phaseContinuity)
-      if (weight < 0.01) continue
-
-      adjList[i].push({
-        to: j,
-        weight,
-        logCost: -Math.log(Math.max(weight, 1e-9)),  // for Dijkstra/Yen's
-      })
-    }
+  const CHUNK_SIZE = 50
+  const chunks = []
+  for (let i = 0; i < n; i += CHUNK_SIZE) {
+    chunks.push({ start: i, end: Math.min(i + CHUNK_SIZE, n) })
   }
+
+  let processed = 0
+
+  // Process chunks sequentially to guarantee rendering updates and prevent freezing
+  for (const chunk of chunks) {
+    await new Promise(r => setTimeout(r, 0)) // yield to event loop
+    
+    for (let i = chunk.start; i < chunk.end; i++) {
+      const srcPhase = nodeData[i].phase
+      const attackerPrivAfterSrc = maxPrivGained[i]
+      const srcZone = nodeData[i].zone
+      const srcMask = nodeData[i].techMask
+
+      const srcAssetId = nodeData[i].assetId
+
+      const edgesForI: Edge[] = []
+
+      for (let j = 0; j < n; j++) {
+        if (i === j) continue
+
+        const tgtData = nodeData[j]
+
+        // Gate 1: kill chain must progress or stay (no backwards jumps > 1 step)
+        // ONLY applies if moving within the same machine. If moving laterally, the kill chain resets.
+        if (srcAssetId === tgtData.assetId) {
+          if (tgtData.phase < srcPhase - 1) continue
+        } else {
+          // If moving to a different machine, the target vulnerability MUST be remotely exploitable
+          // 0: initial_access, 1: execution, 7: lateral_movement
+          if (tgtData.phase !== 0 && tgtData.phase !== 1 && tgtData.phase !== 7) continue
+        }
+
+        // Gate 2: privilege check — attacker must have enough privilege for target
+        if (attackerPrivAfterSrc < tgtData.privReq) continue
+
+        // Gate 3: network reachability (inlined for performance)
+        const baseReach = ZONE_REACH[srcZone]?.[tgtData.zone] ?? 0.1
+        const overlap = popcount(srcMask & tgtData.techMask)
+        const techBonus = Math.min(0.25, overlap * 0.08)
+        const reach = Math.min(1.0, baseReach + techBonus)
+        
+        if (reach < 0.01) continue
+
+        // Phase continuity bonus: forward progress in kill chain is more likely
+        const phaseContinuity = tgtData.phase >= srcPhase ? 1.2 : 0.85
+
+        // Massive bonus for moving within the same machine to ensure intra-machine kill chains are not dropped
+        const sameMachineBonus = srcAssetId === tgtData.assetId ? 10.0 : 1.0
+
+        const rawWeight = tgtData.pExploit * reach * tgtData.threatMult * phaseContinuity * sameMachineBonus
+        const weight = Math.min(0.999, rawWeight)
+        if (weight < 0.0001) continue
+
+        edgesForI.push({
+          to: j,
+          weight,
+          logCost: -Math.log(Math.max(weight, 1e-9)),  // for Dijkstra/Yen's
+          sortWeight: rawWeight, // Uncapped weight for sorting
+        } as Edge & { sortWeight: number })
+      }
+
+      // Keep only the top 30 strongest connections to ensure true sparsity
+      if (edgesForI.length > 30) {
+        edgesForI.sort((a: any, b: any) => b.sortWeight - a.sortWeight)
+        adjList[i] = edgesForI.slice(0, 30)
+      } else {
+        adjList[i] = edgesForI
+      }
+    }
+    
+    processed += (chunk.end - chunk.start)
+    if (setProgress) setProgress(10 + (processed / n) * 25)
+  }
+
   return adjList
 }
 
@@ -367,14 +468,17 @@ const buildSparseGraph = (nodes: GraphNode[]): Edge[][] => {
 // single most dangerous nodes in the environment.
 // ============================================================================
 
-const computePPR = (
+const computePPR = async (
   adjList: Edge[][],
   nodes: GraphNode[],
   seedFn: (node: GraphNode) => number,
+  setProgress?: (p: number) => void,
+  baseProgress = 20,
+  progressRange = 15,
   alpha = 0.15,
   maxIter = 100,
   tol = 1e-8
-): number[] => {
+): Promise<number[]> => {
   const n = adjList.length
   if (n === 0) return []
 
@@ -397,6 +501,10 @@ const computePPR = (
   let pr = [...seedDist]
 
   for (let iter = 0; iter < maxIter; iter++) {
+    if (iter % 5 === 0) {
+      await new Promise(r => setTimeout(r, 0))
+      if (setProgress) setProgress(baseProgress + (iter / maxIter) * progressRange)
+    }
     // Teleportation term + propagation term
     const next = seedDist.map(s => alpha * s)
     for (let j = 0; j < n; j++) {
@@ -413,11 +521,14 @@ const computePPR = (
 }
 
 // Reverse PPR: flip edge directions, seed at high-value targets
-const computeReversePPR = (
+const computeReversePPR = async (
   adjList: Edge[][],
   nodes: GraphNode[],
+  setProgress?: (p: number) => void,
+  baseProgress = 35,
+  progressRange = 15,
   alpha = 0.15
-): number[] => {
+): Promise<number[]> => {
   const n = adjList.length
   const reversedAdj: Edge[][] = Array.from({ length: n }, () => [])
   for (let i = 0; i < n; i++) {
@@ -425,7 +536,7 @@ const computeReversePPR = (
   }
   return computePPR(reversedAdj, nodes,
     node => node.asset.criticality >= 4 ? node.asset.criticality / 5 : 0,
-    alpha
+    setProgress, baseProgress, progressRange, alpha
   )
 }
 
@@ -444,7 +555,7 @@ const computeReversePPR = (
 //   - Log-scale normalisation preserves separation in the high-risk tail
 // ============================================================================
 
-const propagateBeliefs = (nodes: GraphNode[], adjList: Edge[][]): number[] => {
+const propagateBeliefs = async (nodes: GraphNode[], adjList: Edge[][], setProgress?: (p: number) => void): Promise<number[]> => {
   const n = nodes.length
   if (n === 0) return []
 
@@ -470,6 +581,10 @@ const propagateBeliefs = (nodes: GraphNode[], adjList: Edge[][]): number[] => {
 
   const DAMPING = 0.6
   for (let iter = 0; iter < 20; iter++) {
+    if (iter % 2 === 0) {
+      await new Promise(r => setTimeout(r, 0))
+      if (setProgress) setProgress(55 + (iter / 20) * 20)
+    }
     const next = [...belief]
     for (let i = 0; i < n; i++) {
       if (incoming[i].length === 0) continue
@@ -636,27 +751,83 @@ const computeFinalRiskScores = (nodes: GraphNode[], beliefs: number[]): void => 
 //   - Wilson score confidence interval replaces the fake ±20% placeholder
 // ============================================================================
 
+class MinHeap {
+  private heap: [number, number][] = []
+
+  push(val: [number, number]) {
+    this.heap.push(val)
+    this.bubbleUp(this.heap.length - 1)
+  }
+
+  pop(): [number, number] | undefined {
+    if (this.heap.length === 0) return undefined
+    if (this.heap.length === 1) return this.heap.pop()
+    const top = this.heap[0]
+    this.heap[0] = this.heap.pop()!
+    this.bubbleDown(0)
+    return top
+  }
+
+  isEmpty() {
+    return this.heap.length === 0
+  }
+
+  private bubbleUp(index: number) {
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2)
+      if (this.heap[parent][0] <= this.heap[index][0]) break
+      const temp = this.heap[parent]
+      this.heap[parent] = this.heap[index]
+      this.heap[index] = temp
+      index = parent
+    }
+  }
+
+  private bubbleDown(index: number) {
+    const length = this.heap.length
+    while (true) {
+      let left = 2 * index + 1
+      let right = 2 * index + 2
+      let smallest = index
+
+      if (left < length && this.heap[left][0] < this.heap[smallest][0]) {
+        smallest = left
+      }
+      if (right < length && this.heap[right][0] < this.heap[smallest][0]) {
+        smallest = right
+      }
+      if (smallest === index) break
+
+      const temp = this.heap[index]
+      this.heap[index] = this.heap[smallest]
+      this.heap[smallest] = temp
+      index = smallest
+    }
+  }
+}
+
 interface DijkResult { dist: number[]; prev: number[] }
 
 const dijkstra = (
   adj: Edge[][],
   source: number,
-  blockedEdges: Set<string>
+  blockedEdges: Set<number>,
+  blockedNodes: Set<number>
 ): DijkResult => {
   const n = adj.length
   const dist = new Float64Array(n).fill(Infinity)
   const prev = new Int32Array(n).fill(-1)
   dist[source] = 0
 
-  // Simple priority queue using a sorted array (adequate for n < 500)
-  const pq: [number, number][] = [[0, source]]
+  const pq = new MinHeap()
+  pq.push([0, source])
 
-  while (pq.length > 0) {
-    pq.sort((a, b) => a[0] - b[0])
-    const [d, u] = pq.shift()!
+  while (!pq.isEmpty()) {
+    const [d, u] = pq.pop()!
     if (d > dist[u]) continue
     for (const e of adj[u]) {
-      const edgeKey = `${u}->${e.to}`
+      if (blockedNodes.has(e.to)) continue
+      const edgeKey = u * 10000 + e.to
       if (blockedEdges.has(edgeKey)) continue
       const nd = d + e.logCost
       if (nd < dist[e.to]) {
@@ -714,22 +885,30 @@ const computeChainProbability = (
   return pEffective
 }
 
-const discoverAttackPaths = (nodes: GraphNode[], adjList: Edge[][]): AttackPath[] => {
+const pathsEqual = (p1: number[], p2: number[], len: number) => {
+  if (p1.length < len || p2.length < len) return false
+  for (let i = 0; i < len; i++) {
+    if (p1[i] !== p2[i]) return false
+  }
+  return true
+}
+
+const discoverAttackPaths = async (nodes: GraphNode[], adjList: Edge[][], setProgress?: (p: number) => void): Promise<AttackPath[]> => {
   const n = nodes.length
   if (n === 0) return []
 
-  // Entry points: internet-facing nodes, sorted by PPR score
+  // Entry points: internet-facing nodes, sorted by PPR score (fallback to EPSS if PPR is 0)
   const entryIdxs = nodes
-    .map((nd, i) => ({ i, score: nd.asset.internet_facing ? nd.pprScore * 1.5 : 0 }))
+    .map((nd, i) => ({ i, score: nd.asset.internet_facing ? (nd.pprScore > 0 ? nd.pprScore * 1.5 : nd.vuln.epss * 0.0001) : 0 }))
     .filter(e => e.score > 0 && adjList[e.i].length > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 10)
     .map(e => e.i)
 
-  // Target nodes: high-criticality + high blast-radius
+  // Target nodes: high-criticality + high blast-radius (fallback to criticality if blastRadius is 0)
   const targetIdxSet = new Set(
     nodes
-      .map((nd, i) => ({ i, score: nd.asset.criticality * nd.blastRadius }))
+      .map((nd, i) => ({ i, score: nd.asset.criticality * (nd.blastRadius > 0 ? nd.blastRadius : 0.0001) }))
       .sort((a, b) => b.score - a.score)
       .slice(0, 15)
       .map(e => e.i)
@@ -739,15 +918,23 @@ const discoverAttackPaths = (nodes: GraphNode[], adjList: Edge[][]): AttackPath[
   const usedSigs = new Set<string>()
   const K_PATHS = 3  // Yen's: top-K paths per entry→target pair
 
+  let pathsProcessed = 0
+  const totalPairs = entryIdxs.length * targetIdxSet.size
+
   for (const entryIdx of entryIdxs) {
     for (const targetIdx of targetIdxSet) {
       if (entryIdx === targetIdx) continue
+
+      pathsProcessed++
+      // Yield on every pair to keep UI responsive during heavy Dijkstra
+      await new Promise(r => setTimeout(r, 0))
+      if (setProgress) setProgress(75 + (pathsProcessed / totalPairs) * 5)
 
       // Yen's K-Shortest Paths in log-cost space
       const A: { path: number[]; logCost: number }[] = []
 
       // First shortest path via Dijkstra
-      const { dist: d0, prev: p0 } = dijkstra(adjList, entryIdx, new Set())
+      const { dist: d0, prev: p0 } = dijkstra(adjList, entryIdx, new Set(), new Set())
       if (!isFinite(d0[targetIdx])) continue
       const first = reconstructPath(Array.from(p0), entryIdx, targetIdx)
       if (first.length < 2) continue
@@ -762,23 +949,16 @@ const discoverAttackPaths = (nodes: GraphNode[], adjList: Edge[][]): AttackPath[
           const rootPath = prevPath.slice(0, i + 1)
 
           // Block edges already used by earlier A-paths with the same root
-          const blocked = new Set<string>()
+          const blocked = new Set<number>()
           for (const ap of A) {
-            if (ap.path.length > i &&
-                ap.path.slice(0, i + 1).join(',') === rootPath.join(',')) {
-              blocked.add(`${ap.path[i]}->${ap.path[i + 1]}`)
+            if (ap.path.length > i && pathsEqual(ap.path, rootPath, i + 1)) {
+              blocked.add(ap.path[i] * 10000 + ap.path[i + 1])
             }
           }
           // Block nodes in root path (except spur node) to prevent loops
           const blockedNodes = new Set(rootPath.slice(0, -1))
 
-          // Build a temporary adjacency list excluding blocked edges and nodes
-          const tempAdj: Edge[][] = adjList.map((edges, idx) => {
-            if (blockedNodes.has(idx) && idx !== spurNode) return []
-            return edges.filter(e => !blocked.has(`${idx}->${e.to}`) && !blockedNodes.has(e.to))
-          })
-
-          const { dist: dSpur, prev: pSpur } = dijkstra(tempAdj, spurNode, new Set())
+          const { dist: dSpur, prev: pSpur } = dijkstra(adjList, spurNode, blocked, blockedNodes)
           if (!isFinite(dSpur[targetIdx])) continue
 
           const spurPath = reconstructPath(Array.from(pSpur), spurNode, targetIdx)
@@ -794,7 +974,7 @@ const discoverAttackPaths = (nodes: GraphNode[], adjList: Edge[][]): AttackPath[
             totalLogCost += e ? e.logCost : 10
           }
 
-          if (!B.find(b => b.path.join(',') === totalPath.join(','))) {
+          if (!B.find(b => pathsEqual(b.path, totalPath, Math.max(b.path.length, totalPath.length)))) {
             B.push({ path: totalPath, logCost: totalLogCost })
           }
         }
@@ -805,7 +985,7 @@ const discoverAttackPaths = (nodes: GraphNode[], adjList: Edge[][]): AttackPath[
       }
 
       // Convert each path to AttackPath
-      for (const { path } of A) {
+      for (const { path, logCost } of A) {
         const sig = path.join('|')
         if (usedSigs.has(sig)) continue
         usedSigs.add(sig)
@@ -816,66 +996,59 @@ const discoverAttackPaths = (nodes: GraphNode[], adjList: Edge[][]): AttackPath[
         // Wilson score CI with effective sample n = path length × 10
         const ci = wilsonInterval(prob, path.length * 10)
 
-        // === SOPHISTICATED PATH RISK SCORING ===
-        // Multiple factors combined non-linearly
+        // === AUTONOMOUS AI-DRIVEN RISK SCORING MODEL ===
         const pathLength = pathNodes.length
         
-        // Factor 1: Node risk scores along the path
-        const avgRisk = pathNodes.reduce((s, nd) => s + nd.risk, 0) / pathLength
-        const maxRisk = Math.max(...pathNodes.map(nd => nd.risk))
+        // 1. Structural Vulnerability (0-10)
+        // Evaluates the inherent weakness of the nodes in the path
+        const maxNodeRisk = Math.max(...pathNodes.map(nd => nd.risk))
+        const avgNodeRisk = pathNodes.reduce((s, nd) => s + nd.risk, 0) / pathLength
+        const structuralRisk = (maxNodeRisk * 0.7) + (avgNodeRisk * 0.3)
         
-        // Factor 2: Attack probability (chain rule probability)
-        const attackProbFactor = prob
-        
-        // Factor 3: Blast radius of the target (last node)
-        const targetBlastRadius = pathNodes[pathLength - 1]?.blastRadius || 0
-        
-        // Factor 4: KEV and ransomware presence
+        // 2. Exploitability (0-10)
+        // Evaluates the likelihood of successful traversal
         const kevCount = pathNodes.filter(nd => nd.vuln.cisa_kev).length
         const ransomwareCount = pathNodes.filter(nd => nd.vuln.ransomware).length
-        const threatIntelFactor = Math.min(1, (kevCount * 0.3 + ransomwareCount * 0.2))
+        const activeThreatMultiplier = 1 + (kevCount * 0.4) + (ransomwareCount * 0.4)
         
-        // Factor 5: Path efficiency (shorter paths = higher risk for same avg risk)
-        // Normalized by assuming 5-step path is "standard"
-        const pathEfficiency = Math.max(0.5, Math.min(1.5, 5 / pathLength))
+        // prob is the Bayesian probability of the chain (0 to 1)
+        // We use a logarithmic scale to differentiate small probabilities
+        const baseExploitability = prob > 0 ? (10 + Math.max(-10, Math.log10(prob)) * 2) : 0
+        const exploitability = Math.min(10, Math.max(0, baseExploitability) * activeThreatMultiplier)
         
-        // Factor 6: Zone penetration depth (more zones crossed = higher impact)
+        // 3. Business Impact (0-10)
+        // Evaluates the damage if the target is compromised
+        const targetNode = pathNodes[pathLength - 1]
+        const criticalityScore = (targetNode.asset.criticality / 5) * 10 // 2 to 10
+        const blastRadiusScore = Math.min(10, (targetNode.blastRadius || 0) * 100) // Scale up PPR
+        const financialExposure = targetNode.asset.annual_revenue_exposure || 0
+        const financialScore = Math.min(10, (financialExposure / 1000000) * 2) // 1M = 2, 5M = 10
+        
         const zones = new Set(pathNodes.map(nd => nd.asset.network_zone))
-        const zonePenetrationFactor = Math.min(1, zones.size / 3)
+        const lateralMovementPenalty = zones.size > 1 ? 1.5 : 0 // Penalty for crossing zones
         
-        // Factor 7: Entry point risk (how exposed is the first node)
-        const entryPoint = pathNodes[0]
-        const entryRiskFactor = entryPoint?.asset.internet_facing ? 
-          (entryPoint.pprScore * 10 + 0.5) : 0.3
+        const businessImpact = Math.min(10, (criticalityScore * 0.4) + (blastRadiusScore * 0.3) + (financialScore * 0.3) + lateralMovementPenalty)
         
-        // === NON-LINEAR COMBINATION ===
-        // Base score from node risks (weighted geometric mean for non-linearity)
-        const nodeRiskScore = Math.pow(maxRisk * Math.pow(avgRisk, 0.5), 0.67)
+        // 4. Autonomous Risk Synthesis
+        // Dynamically weight the factors based on the path's characteristics
+        let riskScore = 0
+        if (exploitability < 3) {
+          // Low likelihood path, impact matters less
+          riskScore = (structuralRisk * 0.3) + (exploitability * 0.5) + (businessImpact * 0.2)
+        } else if (businessImpact > 8) {
+          // High impact path, prioritize impact and exploitability
+          riskScore = (structuralRisk * 0.2) + (exploitability * 0.4) + (businessImpact * 0.4)
+        } else {
+          // Balanced path
+          riskScore = (structuralRisk * 0.3) + (exploitability * 0.4) + (businessImpact * 0.3)
+        }
         
-        // Attack likelihood component (logistic transform)
-        const attackLikelihood = 1 / (1 + Math.exp(-10 * (attackProbFactor - 0.3)))
+        // Apply path length decay (longer paths are exponentially harder to execute without detection)
+        const lengthDecay = Math.pow(0.92, Math.max(0, pathLength - 2))
+        riskScore = riskScore * lengthDecay
         
-        // Impact component (blast radius + zone penetration)
-        const impactScore = (targetBlastRadius * 20 + zonePenetrationFactor) / 2
-        
-        // Threat amplification (KEV/ransomware boost)
-        const threatAmplification = 1 + threatIntelFactor * 0.5
-        
-        // Combined score with cross-terms
-        // Base + attack likelihood + impact, all modulated by efficiency and threat
-        const rawScore = (
-          nodeRiskScore * 0.35 +
-          attackLikelihood * 10 * 0.25 +
-          impactScore * 10 * 0.25 +
-          entryRiskFactor * 10 * 0.15
-        ) * pathEfficiency * threatAmplification
-        
-        // Use polynomial mapping for smooth non-linear scaling
-        // x^0.7 grows slower than linear, preserving differentiation at high end
-        // Divisor of 25 calibrated from empirical max raw score analysis
-        const normalizedRaw = rawScore / 25  
-        const polyScore = Math.pow(Math.min(1, normalizedRaw), 0.7)
-        const riskScore = Math.max(0.5, Math.min(10, 0.5 + 9.5 * polyScore))
+        // Final bounds check
+        riskScore = Math.max(0.1, Math.min(10.0, riskScore))
 
         const techniques = new Set<string>()
         pathNodes.forEach(nd => nd.vuln.mitre_techniques?.forEach(t => techniques.add(t)))
@@ -1107,29 +1280,31 @@ export default function SecurityDashboard() {
     setSelectedAsset(null)
     setAiResult(null)
 
-    // Step 1: build nodes with improved risk scoring
-    setStatus('Building attack graph…')
-    setProgress(10)
+    // Step 1: build nodes
+    setStatus('Building attack graph nodes…')
+    setProgress(5)
     await new Promise(r => setTimeout(r, 50))
     const graphNodes = buildGraphNodes(assets)
 
-    // Step 2: build privilege-gated probabilistic graph
-    setStatus('Computing graph topology…')
-    setProgress(20)
+    // Step 2: build privilege-gated probabilistic graph (Parallel Chunked)
+    setStatus('Computing graph topology in parallel chunks…')
+    setProgress(10)
     await new Promise(r => setTimeout(r, 50))
-    const adjList = buildSparseGraph(graphNodes)
+    const adjList = await buildSparseGraph(graphNodes, setProgress)
 
     // Step 3: Personalized PageRank (forward + reverse)
     setStatus('Running Personalized PageRank…')
     setProgress(35)
     await new Promise(r => setTimeout(r, 50))
 
-    const forwardPPR = computePPR(adjList, graphNodes,
+    const forwardPPR = await computePPR(adjList, graphNodes,
       node => node.asset.internet_facing
         ? safeNum(node.vuln.epss, 0.5) * (node.vuln.cisa_kev ? 2 : 1)
-        : 0
+        : 0,
+      setProgress, 35, 10
     )
-    const reversePPR = computeReversePPR(adjList, graphNodes)
+    const reversePPR = await computeReversePPR(adjList, graphNodes, setProgress, 45, 10)
+    
     graphNodes.forEach((node, i) => {
       node.pprScore = forwardPPR[i] || 0
       node.blastRadius = reversePPR[i] || 0
@@ -1141,7 +1316,7 @@ export default function SecurityDashboard() {
     setStatus('Propagating attack beliefs…')
     setProgress(55)
     await new Promise(r => setTimeout(r, 50))
-    const beliefs = propagateBeliefs(graphNodes, adjList)
+    const beliefs = await propagateBeliefs(graphNodes, adjList, setProgress)
     computeFinalRiskScores(graphNodes, beliefs)
     setNodes([...graphNodes])
 
@@ -1149,7 +1324,8 @@ export default function SecurityDashboard() {
     setStatus('Discovering optimal attack paths…')
     setProgress(75)
     await new Promise(r => setTimeout(r, 50))
-    const paths = discoverAttackPaths(graphNodes, adjList)
+    
+    const paths = await discoverAttackPaths(graphNodes, adjList, setProgress)
     
     // SHOW GRAPH RESULTS IMMEDIATELY
     setAttackPaths(paths)
@@ -1257,8 +1433,14 @@ export default function SecurityDashboard() {
   }, [nodes])
 
   const zoneDist = useMemo(() => {
-    const dist = { dmz: 0, internal: 0, restricted: 0, airgap: 0 }
-    nodes.forEach(n => { if (dist[n.asset.network_zone as keyof typeof dist] !== undefined) dist[n.asset.network_zone as keyof typeof dist]++ })
+    const dist: Record<string, number> = { 'on-prem-dmz': 0, 'on-prem-internal': 0, 'aws-public': 0, 'aws-private': 0, 'azure-public': 0, 'azure-private': 0, 'vpn-gateway': 0 }
+    nodes.forEach(n => { 
+      if (dist[n.asset.network_zone] !== undefined) {
+        dist[n.asset.network_zone]++ 
+      } else {
+        dist[n.asset.network_zone] = 1
+      }
+    })
     return dist
   }, [nodes])
 
@@ -1383,7 +1565,7 @@ export default function SecurityDashboard() {
                           <span className="text-slate-500">{count} ({pct}%)</span>
                         </div>
                         <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-                          <div className={`h-full rounded-full ${zone === 'dmz' ? 'bg-red-500' : zone === 'internal' ? 'bg-orange-500' : zone === 'restricted' ? 'bg-blue-500' : 'bg-emerald-500'}`} style={{ width: `${pct}%` }} />
+                          <div className={`h-full rounded-full ${zone.includes('dmz') || zone.includes('public') ? 'bg-red-500' : zone.includes('internal') || zone.includes('private') ? 'bg-orange-500' : zone === 'restricted' ? 'bg-blue-500' : 'bg-emerald-500'}`} style={{ width: `${pct}%` }} />
                         </div>
                       </div>
                     )
