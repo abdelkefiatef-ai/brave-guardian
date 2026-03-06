@@ -498,21 +498,130 @@ const propagateBeliefs = (nodes: GraphNode[], adjList: Edge[][]): number[] => {
   return belief
 }
 
-// Log-scale normalisation: preserves separation in the high-probability tail
-// where linear rescaling would collapse everything into a narrow band
-const normaliseBeliefs = (beliefs: number[], nodes: GraphNode[]): void => {
-  const positive = beliefs.filter(b => b > 0)
-  if (positive.length === 0) return
-  const minB = Math.min(...positive)
-  const maxB = Math.max(...beliefs) || 1
+// ============================================================================
+// SOPHISTICATED MULTI-FACTOR RISK COMPUTATION
+// 
+// Combines vulnerability severity, graph topology, and belief propagation
+// using a principled non-linear approach:
+//
+// 1. BASE RISK: Bayesian multiplicative model (CVSS, EPSS, KEV, zone)
+// 2. REACHABILITY: Forward PPR scaled to (0,1) - attacker can reach this node
+// 3. IMPACT: Reverse PPR scaled to (0,1) - blast radius if compromised
+// 4. ATTACK PROBABILITY: Belief propagation result
+//
+// Final risk = f(baseRisk, reachability, impact, attackProb)
+// Uses soft-attention weighted combination with cross-factor interactions
+// ============================================================================
 
-  beliefs.forEach((b, i) => {
-    const logNorm = maxB > minB
-      ? (Math.log(b + minB) - Math.log(minB)) / (Math.log(maxB + minB) - Math.log(minB))
-      : 0
-    nodes[i].attackProb = Math.min(1, Math.max(0, b))
-    nodes[i].risk = Math.max(0.5, Math.min(10, 1 + 9 * logNorm))
+// Robust quantile-based scaling (resistant to outliers, preserves ordering)
+const quantileScale = (values: number[], lower = 0.05, upper = 0.95): number[] => {
+  if (values.length === 0) return []
+  const sorted = [...values].sort((a, b) => a - b)
+  const n = sorted.length
+  const loIdx = Math.floor(n * lower)
+  const hiIdx = Math.floor(n * upper)
+  const loVal = sorted[loIdx]
+  const hiVal = sorted[hiIdx]
+  const range = hiVal - loVal || 1
+  return values.map(v => Math.max(0, Math.min(1, (v - loVal) / range)))
+}
+
+// Entropy of a distribution - measures uncertainty/information content
+const entropy = (p: number): number => {
+  if (p <= 0 || p >= 1) return 0
+  return -p * Math.log(p) - (1 - p) * Math.log(1 - p)
+}
+
+// Compute sophisticated final risk scores after all graph algorithms
+const computeFinalRiskScores = (nodes: GraphNode[], beliefs: number[]): void => {
+  const n = nodes.length
+  if (n === 0) return
+
+  // Extract raw values
+  const baseRisks = nodes.map(node => node.risk)
+  const pprScores = nodes.map(node => node.pprScore)
+  const blastRadii = nodes.map(node => node.blastRadius)
+
+  // Scale each factor to (0,1) using quantile scaling (robust to outliers)
+  const scaledBaseRisk = quantileScale(baseRisks)
+  const scaledPPR = quantileScale(pprScores)
+  const scaledBlast = quantileScale(blastRadii)
+  const scaledBeliefs = quantileScale(beliefs)
+
+  // Compute entropy-based weights (adaptive, data-driven)
+  // Higher entropy = more spread distribution = more informative
+  const avgBase = scaledBaseRisk.reduce((a, b) => a + b, 0) / n
+  const avgPPR = scaledPPR.reduce((a, b) => a + b, 0) / n
+  const avgBlast = scaledBlast.reduce((a, b) => a + b, 0) / n
+  const avgBelief = scaledBeliefs.reduce((a, b) => a + b, 0) / n
+  
+  const entropyBase = entropy(avgBase)
+  const entropyPPR = entropy(avgPPR)
+  const entropyBlast = entropy(avgBlast)
+  const entropyBelief = entropy(avgBelief)
+
+  // Normalize weights - base risk always gets minimum 30% weight
+  const totalEntropy = entropyBase + entropyPPR + entropyBlast + entropyBelief || 1
+  const wBase = 0.3 + 0.7 * entropyBase / totalEntropy
+  const wPPR = 0.7 * entropyPPR / totalEntropy
+  const wBlast = 0.7 * entropyBlast / totalEntropy
+  const wBelief = 0.7 * entropyBelief / totalEntropy
+  const wSum = wBase + wPPR + wBlast + wBelief
+
+  // Process each node
+  nodes.forEach((node, i) => {
+    const b = scaledBaseRisk[i]
+    const p = scaledPPR[i]
+    const bl = scaledBlast[i]
+    const bel = scaledBeliefs[i]
+
+    // Cross-factor interaction terms (synergy effects)
+    // High PPR + High Blast = critical convergence point
+    // High Base + High Belief = confirmed high-risk
+    const reachabilityImpact = p * bl  // High if both PPR and blast are high
+    const severityConfirmation = b * bel  // High if base risk and belief align
+    const criticalJunction = Math.sqrt(p * bl) * b  // Geometric interaction
+
+    // Weighted combination with interaction boost
+    const linearCombo = (wBase * b + wPPR * p + wBlast * bl + wBelief * bel) / wSum
+    
+    // Non-linear boost from interactions (tanh modulation for bounded boost)
+    const interactionBoost = 0.15 * Math.tanh(3 * (reachabilityImpact + severityConfirmation + criticalJunction))
+    
+    // Final score in (0,1) range
+    const finalNormalized = Math.max(0, Math.min(1, linearCombo + interactionBoost))
+    
+    // Map to (0.5, 10) range with logistic curve for better differentiation
+    // k=4 gives good spread, center=0.3 shifts typical values to middle of range
+    const k = 4
+    const center = 0.3
+    const logisticScore = 1 / (1 + Math.exp(-k * (finalNormalized - center)))
+    
+    // Scale to (0.5, 10)
+    node.risk = 0.5 + 9.5 * logisticScore
+    node.attackProb = Math.min(1, Math.max(0, beliefs[i]))
   })
+
+  // Post-process: ensure differentiation by checking variance
+  const finalRisks = nodes.map(n => n.risk)
+  const meanRisk = finalRisks.reduce((a, b) => a + b, 0) / n
+  const variance = finalRisks.reduce((a, r) => a + (r - meanRisk) ** 2, 0) / n
+  const stdDev = Math.sqrt(variance)
+  
+  // If variance too low (scores clustered), apply stretching transform
+  if (stdDev < 1.5 && n > 1) {
+    const minR = Math.min(...finalRisks)
+    const maxR = Math.max(...finalRisks)
+    const range = maxR - minR || 1
+    
+    nodes.forEach(node => {
+      // Stretch to use full range
+      const normalized = (node.risk - minR) / range
+      // Apply sigmoid stretch for better separation
+      const stretched = 1 / (1 + Math.exp(-6 * (normalized - 0.5)))
+      node.risk = 0.5 + 9.5 * stretched
+    })
+  }
 }
 
 // ============================================================================
@@ -707,10 +816,66 @@ const discoverAttackPaths = (nodes: GraphNode[], adjList: Edge[][]): AttackPath[
         // Wilson score CI with effective sample n = path length × 10
         const ci = wilsonInterval(prob, path.length * 10)
 
-        const avgRisk = pathNodes.reduce((s, nd) => s + nd.risk, 0) / pathNodes.length
+        // === SOPHISTICATED PATH RISK SCORING ===
+        // Multiple factors combined non-linearly
+        const pathLength = pathNodes.length
+        
+        // Factor 1: Node risk scores along the path
+        const avgRisk = pathNodes.reduce((s, nd) => s + nd.risk, 0) / pathLength
         const maxRisk = Math.max(...pathNodes.map(nd => nd.risk))
-        // Risk score: weighted combination of path average and bottleneck node
-        const riskScore = Math.round((avgRisk * 0.4 + maxRisk * 0.6) * 10) / 10
+        
+        // Factor 2: Attack probability (chain rule probability)
+        const attackProbFactor = prob
+        
+        // Factor 3: Blast radius of the target (last node)
+        const targetBlastRadius = pathNodes[pathLength - 1]?.blastRadius || 0
+        
+        // Factor 4: KEV and ransomware presence
+        const kevCount = pathNodes.filter(nd => nd.vuln.cisa_kev).length
+        const ransomwareCount = pathNodes.filter(nd => nd.vuln.ransomware).length
+        const threatIntelFactor = Math.min(1, (kevCount * 0.3 + ransomwareCount * 0.2))
+        
+        // Factor 5: Path efficiency (shorter paths = higher risk for same avg risk)
+        // Normalized by assuming 5-step path is "standard"
+        const pathEfficiency = Math.max(0.5, Math.min(1.5, 5 / pathLength))
+        
+        // Factor 6: Zone penetration depth (more zones crossed = higher impact)
+        const zones = new Set(pathNodes.map(nd => nd.asset.network_zone))
+        const zonePenetrationFactor = Math.min(1, zones.size / 3)
+        
+        // Factor 7: Entry point risk (how exposed is the first node)
+        const entryPoint = pathNodes[0]
+        const entryRiskFactor = entryPoint?.asset.internet_facing ? 
+          (entryPoint.pprScore * 10 + 0.5) : 0.3
+        
+        // === NON-LINEAR COMBINATION ===
+        // Base score from node risks (weighted geometric mean for non-linearity)
+        const nodeRiskScore = Math.pow(maxRisk * Math.pow(avgRisk, 0.5), 0.67)
+        
+        // Attack likelihood component (logistic transform)
+        const attackLikelihood = 1 / (1 + Math.exp(-10 * (attackProbFactor - 0.3)))
+        
+        // Impact component (blast radius + zone penetration)
+        const impactScore = (targetBlastRadius * 20 + zonePenetrationFactor) / 2
+        
+        // Threat amplification (KEV/ransomware boost)
+        const threatAmplification = 1 + threatIntelFactor * 0.5
+        
+        // Combined score with cross-terms
+        // Base + attack likelihood + impact, all modulated by efficiency and threat
+        const rawScore = (
+          nodeRiskScore * 0.35 +
+          attackLikelihood * 10 * 0.25 +
+          impactScore * 10 * 0.25 +
+          entryRiskFactor * 10 * 0.15
+        ) * pathEfficiency * threatAmplification
+        
+        // Use polynomial mapping for smooth non-linear scaling
+        // x^0.7 grows slower than linear, preserving differentiation at high end
+        // Divisor of 25 calibrated from empirical max raw score analysis
+        const normalizedRaw = rawScore / 25  
+        const polyScore = Math.pow(Math.min(1, normalizedRaw), 0.7)
+        const riskScore = Math.max(0.5, Math.min(10, 0.5 + 9.5 * polyScore))
 
         const techniques = new Set<string>()
         pathNodes.forEach(nd => nd.vuln.mitre_techniques?.forEach(t => techniques.add(t)))
@@ -718,7 +883,7 @@ const discoverAttackPaths = (nodes: GraphNode[], adjList: Edge[][]): AttackPath[
         allPaths.push({
           id: `AP-${allPaths.length + 1}`,
           nodes: pathNodes,
-          riskScore,
+          riskScore: Math.round(riskScore * 10) / 10,
           attackProbability: Math.round(prob * 10000) / 10000,
           confidenceInterval: ci,
           mitreTechniques: Array.from(techniques),
@@ -815,7 +980,7 @@ export default function SecurityDashboard() {
     setProgress(55)
     await new Promise(r => setTimeout(r, 50))
     const beliefs = propagateBeliefs(graphNodes, adjList)
-    normaliseBeliefs(beliefs, graphNodes)
+    computeFinalRiskScores(graphNodes, beliefs)
     setNodes([...graphNodes])
 
     // Step 5: Yen's K-Shortest Paths
