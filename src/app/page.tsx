@@ -115,94 +115,144 @@ const VULN_DB: Vulnerability[] = [
 ]
 
 // ============================================================================
-// ASSET GENERATION WITH HARDENED FIREWALLS
+// REALISTIC HARDENED ENTERPRISE ARCHITECTURE
 // 
-// Architecture: One hardened firewall per environment
-// - Each zone has a dedicated firewall (FW-ONPREM, FW-AWS, FW-AZURE, FW-VPN)
-// - Firewalls allow ONLY outbound-initiated connections
-// - Inbound connections from external zones are BLOCKED
-// - Only responses to outbound requests are allowed (stateful inspection)
+// As a red teamer, I understand that "hardened firewalls" still allow attacks:
+// 
+// REALITY CHECK:
+// 1. DMZ/Public zones MUST accept inbound connections - that's their job!
+//    - Web servers accept HTTP/HTTPS from internet
+//    - APIs are publicly accessible
+//    - VPN gateways accept connections from road warriors
+// 
+// 2. "Outbound only" means:
+//    - INTERNAL zones cannot receive DIRECT connections from internet
+//    - But DMZ→Internal is ALLOWED (web app needs backend database)
+//    - Cross-cloud is restricted but not impossible
+// 
+// 3. REAL ATTACK VECTORS in hardened environments:
+//    - Web app exploitation (RCE, SQLi) → foothold in DMZ
+//    - Phishing → credentials from internal users
+//    - VPN with weak credentials → direct internal access
+//    - Compromised vendor/supply chain
+// 
+// ATTACK PATH FLOW:
+// Internet → DMZ (web server RCE) → Internal (backend DB) → Cloud (hybrid connection)
 // ============================================================================
 
-// Hardened firewall zone reachability matrix
-// Key principle: Firewalls allow OUTBOUND only
-// - Internal → External: Allowed (outbound-initiated)
-// - External → Internal: BLOCKED (firewall denies inbound)
-// - Same zone: Allowed (internal routing)
+// REALISTIC zone reachability for hardened enterprise
+// This models what ACTUALLY happens in pentests
 const ZONE_REACH_HARDENED: Record<string, Record<string, number>> = {
-  // ON-PREMISES DMZ: Exposed zone, can be reached from internet
+  // ============================================================================
+  // ON-PREMISES DMZ: INTERNET-FACING ZONE
+  // ACCEPTS: HTTP/HTTPS, SSH (management), DNS
+  // BLOCKS: Direct access to internal, but can pivot through compromised host
+  // ============================================================================
   'on-prem-dmz': {
-    'on-prem-dmz': 0.90,      // Same zone: allowed
-    'on-prem-internal': 0.70, // Outbound to internal: allowed (through FW-ONPREM)
-    'aws-public': 0.05,       // Cross-cloud inbound: BLOCKED by FW-AWS
-    'aws-private': 0.02,      // Cross-cloud to private: BLOCKED
-    'azure-public': 0.05,     // Cross-cloud inbound: BLOCKED
-    'azure-private': 0.02,    // Cross-cloud to private: BLOCKED
-    'vpn-gateway': 0.30,      // VPN: limited by FW-VPN
+    'on-prem-dmz': 0.90,       // Same zone: full lateral movement
+    'on-prem-internal': 0.65,  // ★ DMZ→Internal: ALLOWED for web app backends
+    'aws-public': 0.15,        // Cross-cloud: limited but possible (hybrid apps)
+    'aws-private': 0.08,       // Cross-cloud to private: very limited
+    'azure-public': 0.15,      // Cross-cloud: limited
+    'azure-private': 0.08,     // Cross-cloud to private: very limited
+    'vpn-gateway': 0.40,       // VPN access from DMZ (management)
   },
-  // ON-PREMISES INTERNAL: Protected by FW-ONPREM
+  
+  // ============================================================================
+  // ON-PREMISES INTERNAL: PROTECTED ZONE
+  // ACCEPTS: Connections from DMZ (backend), VPN, internal routing
+  // BLOCKS: Direct internet connections (firewall inbound rule)
+  // ATTACK VECTOR: Phishing, compromised VPN, insider threat
+  // ============================================================================
   'on-prem-internal': {
-    'on-prem-dmz': 0.85,      // Outbound to DMZ: allowed
-    'on-prem-internal': 0.90, // Same zone: allowed
-    'aws-public': 0.40,       // Outbound to AWS: allowed through FW-AWS (response)
-    'aws-private': 0.25,      // Outbound to AWS private: allowed
-    'azure-public': 0.40,     // Outbound to Azure: allowed
-    'azure-private': 0.25,    // Outbound to Azure private: allowed
-    'vpn-gateway': 0.70,      // VPN outbound: allowed
+    'on-prem-dmz': 0.80,       // Outbound to DMZ: allowed
+    'on-prem-internal': 0.90,  // Same zone: full lateral movement
+    'aws-public': 0.45,        // Hybrid cloud: outbound to AWS
+    'aws-private': 0.35,       // Hybrid cloud: to AWS private
+    'azure-public': 0.45,      // Hybrid cloud: outbound to Azure
+    'azure-private': 0.35,     // Hybrid cloud: to Azure private
+    'vpn-gateway': 0.75,       // VPN outbound: allowed
   },
-  // AWS PUBLIC: Exposed zone
+  
+  // ============================================================================
+  // AWS PUBLIC: CLOUD DMZ
+  // ACCEPTS: HTTP/HTTPS from internet, API Gateway connections
+  // ATTACK VECTOR: Misconfigured S3 buckets, public EC2 with RCE
+  // ============================================================================
   'aws-public': {
-    'on-prem-dmz': 0.05,      // Inbound to on-prem: BLOCKED by FW-ONPREM
-    'on-prem-internal': 0.02, // Inbound to internal: BLOCKED
-    'aws-public': 0.90,       // Same zone: allowed
-    'aws-private': 0.75,      // Outbound to AWS private: allowed (through FW-AWS)
-    'azure-public': 0.03,     // Cross-cloud: BLOCKED by both firewalls
-    'azure-private': 0.01,    // Cross-cloud to private: BLOCKED
-    'vpn-gateway': 0.10,      // VPN: limited
+    'on-prem-dmz': 0.15,       // Cross-cloud to on-prem DMZ: limited
+    'on-prem-internal': 0.05,  // ★ BLOCKED: Can't reach on-prem internal directly
+    'aws-public': 0.90,        // Same zone: allowed
+    'aws-private': 0.70,       // ★ AWS-Public→AWS-Private: ALLOWED (web→db pattern)
+    'azure-public': 0.08,      // Cross-cloud: blocked
+    'azure-private': 0.03,     // Cross-cloud to private: blocked
+    'vpn-gateway': 0.25,       // VPN: limited
   },
-  // AWS PRIVATE: Protected by FW-AWS
+  
+  // ============================================================================
+  // AWS PRIVATE: PROTECTED CLOUD ZONE
+  // ACCEPTS: Connections from AWS-Public, VPN
+  // BLOCKS: Direct internet access
+  // ATTACK VECTOR: Compromised IAM credentials, lateral from public subnet
+  // ============================================================================
   'aws-private': {
-    'on-prem-dmz': 0.30,      // Outbound to DMZ: allowed
-    'on-prem-internal': 0.50, // Outbound to on-prem internal: allowed
-    'aws-public': 0.85,       // Outbound to AWS public: allowed
-    'aws-private': 0.90,      // Same zone: allowed
-    'azure-public': 0.15,     // Cross-cloud outbound: limited
-    'azure-private': 0.10,    // Cross-cloud: limited
-    'vpn-gateway': 0.40,      // VPN: allowed
+    'on-prem-dmz': 0.25,       // Outbound to DMZ: allowed
+    'on-prem-internal': 0.40,  // Hybrid connection: allowed
+    'aws-public': 0.80,        // Outbound to AWS public: allowed
+    'aws-private': 0.90,       // Same zone: allowed
+    'azure-public': 0.12,      // Cross-cloud: limited
+    'azure-private': 0.08,     // Cross-cloud: limited
+    'vpn-gateway': 0.45,       // VPN: allowed
   },
-  // AZURE PUBLIC: Exposed zone
+  
+  // ============================================================================
+  // AZURE PUBLIC: CLOUD DMZ
+  // ACCEPTS: HTTP/HTTPS from internet, Azure API Management
+  // ATTACK VECTOR: Public VMs, misconfigured storage accounts
+  // ============================================================================
   'azure-public': {
-    'on-prem-dmz': 0.05,      // Inbound to on-prem: BLOCKED
-    'on-prem-internal': 0.02, // Inbound to internal: BLOCKED
-    'aws-public': 0.03,       // Cross-cloud: BLOCKED
-    'aws-private': 0.01,      // Cross-cloud to private: BLOCKED
-    'azure-public': 0.90,     // Same zone: allowed
-    'azure-private': 0.75,    // Outbound to Azure private: allowed
-    'vpn-gateway': 0.10,      // VPN: limited
+    'on-prem-dmz': 0.15,       // Cross-cloud: limited
+    'on-prem-internal': 0.05,  // ★ BLOCKED: Can't reach on-prem internal
+    'aws-public': 0.08,        // Cross-cloud: blocked
+    'aws-private': 0.03,       // Cross-cloud: blocked
+    'azure-public': 0.90,      // Same zone: allowed
+    'azure-private': 0.70,     // ★ Azure-Public→Azure-Private: ALLOWED
+    'vpn-gateway': 0.25,       // VPN: limited
   },
-  // AZURE PRIVATE: Protected by FW-AZURE
+  
+  // ============================================================================
+  // AZURE PRIVATE: PROTECTED CLOUD ZONE
+  // ACCEPTS: Connections from Azure-Public, VPN
+  // ATTACK VECTOR: Compromised service principals, lateral from public
+  // ============================================================================
   'azure-private': {
-    'on-prem-dmz': 0.30,      // Outbound to DMZ: allowed
-    'on-prem-internal': 0.50, // Outbound to on-prem: allowed
-    'aws-public': 0.15,       // Cross-cloud outbound: limited
-    'aws-private': 0.10,      // Cross-cloud: limited
-    'azure-public': 0.85,     // Outbound to Azure public: allowed
-    'azure-private': 0.90,    // Same zone: allowed
-    'vpn-gateway': 0.40,      // VPN: allowed
+    'on-prem-dmz': 0.25,       // Outbound to DMZ: allowed
+    'on-prem-internal': 0.40,  // Hybrid: allowed
+    'aws-public': 0.12,        // Cross-cloud: limited
+    'aws-private': 0.08,       // Cross-cloud: limited
+    'azure-public': 0.80,      // Outbound: allowed
+    'azure-private': 0.90,     // Same zone: allowed
+    'vpn-gateway': 0.45,       // VPN: allowed
   },
-  // VPN GATEWAY: Controlled by FW-VPN
+  
+  // ============================================================================
+  // VPN GATEWAY: REMOTE ACCESS POINT
+  // ACCEPTS: Authenticated VPN connections from internet
+  // ★ MAJOR ATTACK VECTOR: Weak credentials, no MFA, compromised user devices
+  // ============================================================================
   'vpn-gateway': {
-    'on-prem-dmz': 0.60,      // Outbound to DMZ: allowed
-    'on-prem-internal': 0.80, // Outbound to internal: allowed
-    'aws-public': 0.30,       // Outbound to cloud: allowed
-    'aws-private': 0.20,      // Outbound to cloud private: allowed
-    'azure-public': 0.30,     // Outbound to cloud: allowed
-    'azure-private': 0.20,    // Outbound to cloud private: allowed
-    'vpn-gateway': 0.90,      // Same zone: allowed
+    'on-prem-dmz': 0.55,       // VPN→DMZ: allowed (for remote admins)
+    'on-prem-internal': 0.75,  // ★ VPN→Internal: ALLOWED (main attack path!)
+    'aws-public': 0.35,        // VPN→Cloud: allowed
+    'aws-private': 0.25,       // VPN→Cloud private: allowed
+    'azure-public': 0.35,      // VPN→Cloud: allowed
+    'azure-private': 0.25,     // VPN→Cloud private: allowed
+    'vpn-gateway': 0.90,       // Same zone: allowed
   },
+  
   // Legacy zones
-  'dmz':      { dmz: 0.90, internal: 0.70, restricted: 0.05, airgap: 0.00 },
-  'internal': { dmz: 0.85, internal: 0.90, restricted: 0.40, airgap: 0.00 },
+  'dmz':      { dmz: 0.90, internal: 0.65, restricted: 0.05, airgap: 0.00 },
+  'internal': { dmz: 0.80, internal: 0.90, restricted: 0.40, airgap: 0.00 },
   'restricted': { dmz: 0.10, internal: 0.30, restricted: 0.80, airgap: 0.02 },
   'airgap':   { dmz: 0.00, internal: 0.00, restricted: 0.01, airgap: 0.70 },
 }
@@ -231,33 +281,97 @@ const ENVIRONMENTS = {
   }
 }
 
-// Firewall-specific vulnerability - represents firewall misconfigurations or weaknesses
+// ============================================================================
+// REALISTIC FIREWALL & VPN VULNERABILITIES (Red Team Perspective)
+// These represent the REAL weaknesses we find in hardened environments
+// ============================================================================
 const FIREWALL_VULNS: Vulnerability[] = [
+  // VPN is the #1 attack vector in hardened environments
   { 
-    id: 'FW-OUTBOUND-UNRESTRICTED', 
-    title: 'Outbound Rules Unrestricted', 
-    severity: 'medium', 
-    cvss: 5.3, 
-    epss: 0.35, 
-    attack_complexity: 0.6, 
+    id: 'VPN-NO-MFA', 
+    title: 'VPN Without Multi-Factor Authentication', 
+    severity: 'critical', 
+    cvss: 9.1, 
+    epss: 0.85, 
+    attack_complexity: 0.2, 
     privileges_required: 'none', 
-    cisa_kev: false, 
-    ransomware: false, 
-    kill_chain_phase: 'exfiltration', 
-    mitre_techniques: ['T1048', 'T1041'] 
+    cisa_kev: true, 
+    ransomware: true, 
+    kill_chain_phase: 'initial_access',  // ★ Direct path to internal!
+    mitre_techniques: ['T1078', 'T1132', 'T1021'] 
   },
   { 
-    id: 'FW-VPN-SPLIT-TUNNEL', 
+    id: 'VPN-SPLIT-TUNNEL', 
     title: 'VPN Split Tunneling Enabled', 
-    severity: 'medium', 
-    cvss: 5.9, 
-    epss: 0.42, 
-    attack_complexity: 0.5, 
+    severity: 'high', 
+    cvss: 7.5, 
+    epss: 0.65, 
+    attack_complexity: 0.35, 
     privileges_required: 'none', 
     cisa_kev: false, 
     ransomware: false, 
     kill_chain_phase: 'initial_access', 
-    mitre_techniques: ['T1132', 'T1573'] 
+    mitre_techniques: ['T1132', 'T1573', 'T1090'] 
+  },
+  // Firewall misconfigurations
+  { 
+    id: 'FW-OVERLYY-PERMISSIVE-RULES', 
+    title: 'Overly Permissive Firewall Rules', 
+    severity: 'high', 
+    cvss: 7.8, 
+    epss: 0.55, 
+    attack_complexity: 0.3, 
+    privileges_required: 'low', 
+    cisa_kev: false, 
+    ransomware: false, 
+    kill_chain_phase: 'lateral_movement', 
+    mitre_techniques: ['T1021', 'T1570', 'T1043'] 
+  },
+  { 
+    id: 'FW-OUTBOUND-UNRESTRICTED', 
+    title: 'Unrestricted Outbound Rules (Data Exfil Risk)', 
+    severity: 'medium', 
+    cvss: 5.3, 
+    epss: 0.45, 
+    attack_complexity: 0.5, 
+    privileges_required: 'none', 
+    cisa_kev: false, 
+    ransomware: false, 
+    kill_chain_phase: 'exfiltration', 
+    mitre_techniques: ['T1048', 'T1041', 'T1567'] 
+  },
+]
+
+// ============================================================================
+// PHISHING-BASED VULNERABILITIES (The #1 real attack vector)
+// In hardened environments, phishing bypasses all firewall controls
+// ============================================================================
+const PHISHING_VULNS: Vulnerability[] = [
+  { 
+    id: 'USER-PHISHING-SUSCEPTIBLE', 
+    title: 'User Susceptible to Phishing', 
+    severity: 'critical', 
+    cvss: 8.5, 
+    epss: 0.92,  // Very likely to be exploited
+    attack_complexity: 0.15,  // Easy for attacker
+    privileges_required: 'none', 
+    cisa_kev: true, 
+    ransomware: true, 
+    kill_chain_phase: 'initial_access', 
+    mitre_techniques: ['T1566', 'T1528', 'T1534'] 
+  },
+  { 
+    id: 'USER-WEAK-PASSWORD', 
+    title: 'User With Weak Password (Credential Stuffing)', 
+    severity: 'high', 
+    cvss: 7.5, 
+    epss: 0.78, 
+    attack_complexity: 0.25, 
+    privileges_required: 'none', 
+    cisa_kev: true, 
+    ransomware: false, 
+    kill_chain_phase: 'initial_access', 
+    mitre_techniques: ['T1110', 'T1078'] 
   },
 ]
 
@@ -286,7 +400,7 @@ const generateAssets = (): Asset[] => {
     // Determine if firewall is internet-facing (DMZ or public zones)
     const isInternetFacing = zone.includes('dmz') || zone.includes('public')
     
-    // Firewalls get specific vulnerabilities + random ones
+    // Firewalls get specific vulnerabilities
     const fwVulns: Vulnerability[] = [...FIREWALL_VULNS]
     
     // Internet-facing firewalls are more exposed
@@ -313,23 +427,54 @@ const generateAssets = (): Asset[] => {
   }
 
   // ============================================
-  // STEP 2: Create regular assets (VMs, servers, etc.)
+  // STEP 2: Create VPN gateway with VPN-specific vulns
   // ============================================
-  const numRegularAssets = 4996 // Total 5000 - 4 firewalls
+  assets.push({
+    id: 'asset-vpn-concentrator',
+    name: 'VPN-Concentrator-01',
+    type: 'firewall',
+    ip: '10.255.0.254',
+    network_zone: 'vpn-gateway',
+    criticality: 5,
+    internet_facing: true, // VPN accepts connections from internet!
+    business_unit: 'IT Security',
+    annual_revenue_exposure: 3000000,
+    vulnerabilities: FIREWALL_VULNS.filter(v => v.id.includes('VPN'))
+  })
+  assetIdx++
+
+  // ============================================
+  // STEP 3: Create regular assets with realistic vulnerability distribution
+  // ============================================
+  const numRegularAssets = 4995 // Total 5000 - 4 firewalls - 1 VPN
   
   for (let i = 0; i < numRegularAssets; i++) {
     const type = types[Math.floor(random() * types.length)]
     const zone = zones[Math.floor(random() * zones.length)]
-    // Hardened: only DMZ and public zones are internet-facing
-    // Internal zones are protected by firewalls
-    const internetFacing = zone.includes('dmz') || zone.includes('public')
+    
+    // ★ REALISTIC: Only DMZ and public zones are internet-facing
+    // Internal zones are protected by firewalls and NOT directly accessible from internet
+    const isInternetFacing = zone.includes('dmz') || zone.includes('public')
+    
     const numVulns = Math.floor(random() * 4) + 1
     const vulns: Vulnerability[] = []
     
-    if (internetFacing) {
+    // ★ KEY CHANGE: Initial access vulnerabilities ONLY on internet-facing assets
+    // This is realistic - you can't RCE into an internal server from the internet
+    if (isInternetFacing) {
       const entryVulns = VULN_DB.filter(v => v.kill_chain_phase === 'initial_access')
       if (entryVulns.length > 0) vulns.push({ ...entryVulns[Math.floor(random() * entryVulns.length)] })
+    } 
+    // ★ NEW: Phishing vulnerabilities for INTERNAL users
+    // This is how attackers ACTUALLY get into hardened environments
+    else if (zone.includes('internal') || zone.includes('private')) {
+      // ~15% of internal users are susceptible to phishing
+      if (random() > 0.85) {
+        vulns.push({ ...PHISHING_VULNS[Math.floor(random() * PHISHING_VULNS.length)] })
+      }
     }
+    
+    // Add additional random vulnerabilities
     for (let j = vulns.length; j < numVulns; j++) {
       vulns.push({ ...VULN_DB[Math.floor(random() * VULN_DB.length)] })
     }
@@ -353,7 +498,7 @@ const generateAssets = (): Asset[] => {
       ip: `${ipPrefix}.${Math.floor(random() * 255)}.${Math.floor(random() * 255)}`,
       network_zone: zone, 
       criticality: Math.floor(random() * 5) + 1,
-      internet_facing: internetFacing,
+      internet_facing: isInternetFacing,
       business_unit: businessUnits[Math.floor(random() * businessUnits.length)],
       annual_revenue_exposure: Math.floor(random() * 10000000) + 100000,
       vulnerabilities: vulns
