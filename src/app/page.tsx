@@ -584,19 +584,18 @@ const generateAssets = (): Asset[] => {
   let assetIdx = 1
 
   // ============================================
-  // STEP 1: Create hardened firewalls per environment
+  // STEP 1: Create firewall assets from FIREWALLS definition
   // ============================================
-  for (const [envKey, env] of Object.entries(ENVIRONMENTS)) {
-    const fw = env.firewall
-    const zone = env.zones[0] // Place firewall in first zone of environment
+  for (const fw of FIREWALLS) {
+    const zone = fw.zone
     
     // Determine if firewall is internet-facing (DMZ or public zones)
     const isInternetFacing = zone.includes('dmz') || zone.includes('public')
     
-    // Firewalls get specific vulnerabilities
+    // Firewalls get specific vulnerabilities + their misconfigurations
     const fwVulns: Vulnerability[] = [...FIREWALL_VULNS]
     
-    // Internet-facing firewalls are more exposed
+    // Internet-facing firewalls are more exposed - add initial access vulns
     if (isInternetFacing) {
       const entryVulns = VULN_DB.filter(v => v.kill_chain_phase === 'initial_access')
       if (entryVulns.length > 0) {
@@ -604,8 +603,16 @@ const generateAssets = (): Asset[] => {
       }
     }
 
+    // Add misconfiguration-based vulnerabilities
+    if (fw.misconfigurations.includes('no-mfa-required')) {
+      const noMfaVuln = FIREWALL_VULNS.find(v => v.id === 'VPN-NO-MFA')
+      if (noMfaVuln && !fwVulns.find(v => v.id === 'VPN-NO-MFA')) {
+        fwVulns.push(noMfaVuln)
+      }
+    }
+
     assets.push({
-      id: `firewall-${envKey}`,
+      id: `firewall-${fw.id}`,
       name: fw.name,
       type: 'firewall',
       ip: zone.includes('aws') ? '172.16.0.1' : zone.includes('azure') ? '192.168.0.1' : zone === 'vpn-gateway' ? '10.255.0.1' : '10.0.0.1',
