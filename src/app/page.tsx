@@ -902,11 +902,39 @@ const discoverAttackPaths = (nodes: GraphNode[], adjList: Edge[][]): AttackPath[
 }
 
 // ============================================================================
+// CONNECTION TYPES
+// ============================================================================
+
+interface ConnectionConfig {
+  name: string
+  type: 'ssh' | 'snmp' | 'api' | 'import'
+  host?: string
+  port?: number
+  username?: string
+  password?: string
+  sshKey?: string
+  snmpCommunity?: string
+  apiUrl?: string
+  apiToken?: string
+  networkRange?: string  // CIDR notation for network scan
+}
+
+interface ScanResult {
+  host: string
+  type: 'vm' | 'firewall' | 'server' | 'cloud_resource'
+  hostname?: string
+  os?: string
+  openPorts?: number[]
+  services?: string[]
+  vulnerabilities: Vulnerability[]
+}
+
+// ============================================================================
 // MAIN COMPONENT
 // ============================================================================
 
 export default function SecurityDashboard() {
-  const [assets] = useState<Asset[]>(INITIAL_ASSETS)
+  const [assets, setAssets] = useState<Asset[]>(INITIAL_ASSETS)
   const [nodes, setNodes] = useState<GraphNode[]>([])
   const [attackPaths, setAttackPaths] = useState<AttackPath[]>([])
   const [isScanning, setIsScanning] = useState(false)
@@ -917,6 +945,21 @@ export default function SecurityDashboard() {
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null)
   const [status, setStatus] = useState('')
   const [aiResult, setAiResult] = useState<AIAnalysisResult | null>(null)
+  
+  // Connection modal state
+  const [showConnectModal, setShowConnectModal] = useState(false)
+  const [isConnecting, setIsConnecting] = useState(false)
+  const [connectionConfig, setConnectionConfig] = useState<ConnectionConfig>({
+    name: '',
+    type: 'ssh',
+    host: '',
+    port: 22,
+    username: '',
+    password: '',
+    networkRange: '',
+  })
+  const [savedConnections, setSavedConnections] = useState<ConnectionConfig[]>([])
+  const [scanLog, setScanLog] = useState<string[]>([])
 
   const assetFindings = useMemo(() => {
     if (!selectedAsset) return []
@@ -935,6 +978,125 @@ export default function SecurityDashboard() {
       .sort((a, b) => b.avgRisk - a.avgRisk)
       .slice(0, 50)
   }, [nodes])
+
+  // Connect to infrastructure and scan
+  const connectAndScan = useCallback(async (config: ConnectionConfig) => {
+    setIsConnecting(true)
+    setScanLog([])
+    
+    const addLog = (msg: string) => {
+      setScanLog(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`])
+    }
+    
+    try {
+      addLog(`Connecting to ${config.type.toUpperCase()} target...`)
+      
+      const response = await fetch('/api/scan-infrastructure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+      })
+      
+      if (!response.ok) {
+        throw new Error(`Scan failed: ${response.statusText}`)
+      }
+      
+      const result = await response.json()
+      addLog(`Discovered ${result.assets?.length || 0} assets`)
+      
+      if (result.assets && result.assets.length > 0) {
+        // Map scanned assets to our Asset format
+        const scannedAssets: Asset[] = result.assets.map((scan: any, idx: number) => ({
+          id: `scanned-${idx + 1}`,
+          name: scan.hostname || scan.host,
+          type: scan.type || 'vm',
+          ip: scan.host,
+          network_zone: scan.networkZone || 'internal',
+          criticality: scan.criticality || 3,
+          internet_facing: scan.internetFacing || false,
+          business_unit: scan.businessUnit || 'IT',
+          annual_revenue_exposure: scan.revenueExposure || 500000,
+          vulnerabilities: scan.vulnerabilities || []
+        }))
+        
+        setAssets(scannedAssets)
+        addLog(`Loaded ${scannedAssets.length} assets into dashboard`)
+        
+        // Save connection
+        setSavedConnections(prev => {
+          const updated = prev.filter(c => c.name !== config.name)
+          return [...updated, config]
+        })
+        
+        setShowConnectModal(false)
+      }
+    } catch (error) {
+      addLog(`Error: ${error instanceof Error ? error.message : 'Connection failed'}`)
+    } finally {
+      setIsConnecting(false)
+    }
+  }, [])
+  
+  // Import from file (CSV/JSON)
+  const importFromFile = useCallback(async (file: File) => {
+    setIsConnecting(true)
+    setScanLog([])
+    
+    const addLog = (msg: string) => {
+      setScanLog(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`])
+    }
+    
+    try {
+      addLog(`Importing from ${file.name}...`)
+      
+      const text = await file.text()
+      let importedAssets: any[] = []
+      
+      if (file.name.endsWith('.json')) {
+        importedAssets = JSON.parse(text)
+      } else if (file.name.endsWith('.csv')) {
+        const lines = text.split('\n')
+        const headers = lines[0].split(',').map(h => h.trim().toLowerCase())
+        
+        for (let i = 1; i < lines.length; i++) {
+          if (!lines[i].trim()) continue
+          const values = lines[i].split(',')
+          const obj: any = {}
+          headers.forEach((h, idx) => {
+            obj[h] = values[idx]?.trim() || ''
+          })
+          importedAssets.push(obj)
+        }
+      }
+      
+      addLog(`Parsed ${importedAssets.length} records`)
+      
+      // Map imported data to Asset format
+      const mappedAssets: Asset[] = importedAssets.map((item, idx) => ({
+        id: `imported-${idx + 1}`,
+        name: item.name || item.hostname || item.host || `Asset-${idx + 1}`,
+        type: (item.type || 'vm') as Asset['type'],
+        ip: item.ip || item.host || '0.0.0.0',
+        network_zone: (item.zone || item.network_zone || 'internal') as Asset['network_zone'],
+        criticality: parseInt(item.criticality) || 3,
+        internet_facing: item.internet_facing === 'true' || item.internetFacing === true,
+        business_unit: item.business_unit || item.department || 'IT',
+        annual_revenue_exposure: parseInt(item.revenue_exposure) || 500000,
+        vulnerabilities: Array.isArray(item.vulnerabilities) ? item.vulnerabilities : 
+          (item.cve ? [{ id: item.cve, title: item.cve, severity: 'high', cvss: 7, epss: 0.5, attack_complexity: 0.3, privileges_required: 'none', cisa_kev: false, ransomware: false, kill_chain_phase: 'initial_access', mitre_techniques: [] }] : [])
+      }))
+      
+      if (mappedAssets.length > 0) {
+        setAssets(mappedAssets)
+        addLog(`Loaded ${mappedAssets.length} assets into dashboard`)
+        setShowConnectModal(false)
+      }
+    } catch (error) {
+      addLog(`Import error: ${error instanceof Error ? error.message : 'Failed to parse file'}`)
+    } finally {
+      setIsConnecting(false)
+    }
+  }, [])
 
   const runAnalysis = useCallback(async () => {
     if (isScanning) return
@@ -1151,12 +1313,26 @@ export default function SecurityDashboard() {
             </nav>
           </div>
           <div className="flex items-center gap-4">
+            {/* Data source indicator */}
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-lg">
+              <div className={`w-2 h-2 rounded-full ${assets[0]?.id.startsWith('asset-') ? 'bg-yellow-500' : 'bg-emerald-500'}`} />
+              <span className="text-xs text-slate-600">
+                {assets[0]?.id.startsWith('asset-') ? 'Simulated Data' : assets[0]?.id.startsWith('scanned-') ? 'Scanned' : 'Imported'} ({assets.length} assets)
+              </span>
+            </div>
             {status && (
               <div className="flex items-center gap-2 text-sm text-slate-600">
                 <div className="w-4 h-4 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" />
                 {status}
               </div>
             )}
+            <button onClick={() => setShowConnectModal(true)}
+              className="px-4 py-2.5 rounded-lg font-medium text-sm border border-slate-300 bg-white hover:bg-slate-50 transition-all flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+              </svg>
+              Connect
+            </button>
             <button onClick={runAnalysis} disabled={isScanning}
               className={`px-5 py-2.5 rounded-lg font-medium text-sm transition-all ${isScanning ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-slate-900 text-white hover:bg-slate-800 shadow-sm'}`}>
               {isScanning ? 'Analyzing…' : 'Run Analysis'}
@@ -1576,6 +1752,189 @@ export default function SecurityDashboard() {
           </div>
         )}
       </main>
+
+      {/* Connect Modal */}
+      {showConnectModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-slate-200">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-bold text-slate-900">Connect to Infrastructure</h2>
+                <button onClick={() => setShowConnectModal(false)} className="text-slate-400 hover:text-slate-600">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            
+            <div className="p-6 space-y-4">
+              {/* Connection Type Tabs */}
+              <div className="flex gap-2 p-1 bg-slate-100 rounded-lg">
+                {[
+                  { id: 'ssh', label: 'SSH', icon: '🔐' },
+                  { id: 'snmp', label: 'SNMP', icon: '📡' },
+                  { id: 'api', label: 'API', icon: '🔌' },
+                  { id: 'import', label: 'Import', icon: '📁' },
+                ].map(tab => (
+                  <button key={tab.id}
+                    onClick={() => setConnectionConfig(c => ({ ...c, type: tab.id as any }))}
+                    className={`flex-1 px-3 py-2 text-sm font-medium rounded-md transition-all flex items-center justify-center gap-2 ${connectionConfig.type === tab.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}>
+                    <span>{tab.icon}</span>
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Connection Name */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Connection Name</label>
+                <input type="text" value={connectionConfig.name} 
+                  onChange={e => setConnectionConfig(c => ({ ...c, name: e.target.value }))}
+                  placeholder="e.g., Production Network"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-500" />
+              </div>
+
+              {/* SSH/SNMP/API Config */}
+              {connectionConfig.type !== 'import' && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Network Range (CIDR)</label>
+                    <input type="text" value={connectionConfig.networkRange || ''}
+                      onChange={e => setConnectionConfig(c => ({ ...c, networkRange: e.target.value }))}
+                      placeholder="e.g., 192.168.1.0/24"
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-500" />
+                  </div>
+                  
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Host</label>
+                      <input type="text" value={connectionConfig.host || ''}
+                        onChange={e => setConnectionConfig(c => ({ ...c, host: e.target.value }))}
+                        placeholder="IP or hostname"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-500" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Port</label>
+                      <input type="number" value={connectionConfig.port || ''}
+                        onChange={e => setConnectionConfig(c => ({ ...c, port: parseInt(e.target.value) }))}
+                        placeholder={connectionConfig.type === 'ssh' ? '22' : connectionConfig.type === 'snmp' ? '161' : '443'}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-500" />
+                    </div>
+                  </div>
+
+                  {connectionConfig.type === 'ssh' && (
+                    <>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Username</label>
+                        <input type="text" value={connectionConfig.username || ''}
+                          onChange={e => setConnectionConfig(c => ({ ...c, username: e.target.value }))}
+                          placeholder="SSH username"
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-500" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">Password / SSH Key</label>
+                        <textarea value={connectionConfig.password || ''}
+                          onChange={e => setConnectionConfig(c => ({ ...c, password: e.target.value }))}
+                          placeholder="Password or paste SSH private key"
+                          rows={3}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-500 font-mono" />
+                      </div>
+                    </>
+                  )}
+
+                  {connectionConfig.type === 'snmp' && (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">SNMP Community String</label>
+                      <input type="password" value={connectionConfig.snmpCommunity || ''}
+                        onChange={e => setConnectionConfig(c => ({ ...c, snmpCommunity: e.target.value }))}
+                        placeholder="e.g., public"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-500" />
+                    </div>
+                  )}
+
+                  {connectionConfig.type === 'api' && (
+                    <>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">API URL</label>
+                        <input type="text" value={connectionConfig.apiUrl || ''}
+                          onChange={e => setConnectionConfig(c => ({ ...c, apiUrl: e.target.value }))}
+                          placeholder="https://api.example.com/v1/scan"
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-500" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1">API Token</label>
+                        <input type="password" value={connectionConfig.apiToken || ''}
+                          onChange={e => setConnectionConfig(c => ({ ...c, apiToken: e.target.value }))}
+                          placeholder="API token or key"
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-slate-500" />
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+
+              {/* Import from file */}
+              {connectionConfig.type === 'import' && (
+                <div className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center">
+                  <input type="file" id="importFile" accept=".json,.csv" className="hidden"
+                    onChange={e => {
+                      const file = e.target.files?.[0]
+                      if (file) importFromFile(file)
+                    }} />
+                  <label htmlFor="importFile" className="cursor-pointer">
+                    <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                      <svg className="w-6 h-6 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                      </svg>
+                    </div>
+                    <p className="text-sm font-medium text-slate-700">Drop files here or click to upload</p>
+                    <p className="text-xs text-slate-500 mt-1">JSON or CSV files supported</p>
+                  </label>
+                </div>
+              )}
+
+              {/* Scan Log */}
+              {scanLog.length > 0 && (
+                <div className="bg-slate-900 rounded-lg p-3 max-h-32 overflow-y-auto">
+                  {scanLog.map((log, i) => (
+                    <p key={i} className="text-xs text-emerald-400 font-mono">{log}</p>
+                  ))}
+                </div>
+              )}
+
+              {/* Saved Connections */}
+              {savedConnections.length > 0 && connectionConfig.type !== 'import' && (
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">Recent Connections</label>
+                  <div className="space-y-1">
+                    {savedConnections.slice(0, 3).map((conn, i) => (
+                      <button key={i}
+                        onClick={() => setConnectionConfig(conn)}
+                        className="w-full px-3 py-2 text-left text-sm bg-slate-50 hover:bg-slate-100 rounded-lg flex items-center justify-between">
+                        <span className="font-medium">{conn.name}</span>
+                        <span className="text-slate-400 uppercase text-xs">{conn.type}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="p-6 border-t border-slate-200 flex gap-3 justify-end">
+              <button onClick={() => { setAssets(INITIAL_ASSETS); setShowConnectModal(false) }}
+                className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-slate-900">
+                Use Demo Data
+              </button>
+              <button onClick={() => connectAndScan(connectionConfig)}
+                disabled={isConnecting || (connectionConfig.type !== 'import' && !connectionConfig.host && !connectionConfig.networkRange)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${isConnecting || (connectionConfig.type !== 'import' && !connectionConfig.host && !connectionConfig.networkRange) ? 'bg-slate-200 text-slate-500 cursor-not-allowed' : 'bg-slate-900 text-white hover:bg-slate-800'}`}>
+                {isConnecting ? 'Connecting…' : 'Connect & Scan'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
