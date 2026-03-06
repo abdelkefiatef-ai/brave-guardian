@@ -115,11 +115,154 @@ const VULN_DB: Vulnerability[] = [
 ]
 
 // ============================================================================
-// ASSET GENERATION
+// ASSET GENERATION WITH HARDENED FIREWALLS
+// 
+// Architecture: One hardened firewall per environment
+// - Each zone has a dedicated firewall (FW-ONPREM, FW-AWS, FW-AZURE, FW-VPN)
+// - Firewalls allow ONLY outbound-initiated connections
+// - Inbound connections from external zones are BLOCKED
+// - Only responses to outbound requests are allowed (stateful inspection)
 // ============================================================================
 
+// Hardened firewall zone reachability matrix
+// Key principle: Firewalls allow OUTBOUND only
+// - Internal → External: Allowed (outbound-initiated)
+// - External → Internal: BLOCKED (firewall denies inbound)
+// - Same zone: Allowed (internal routing)
+const ZONE_REACH_HARDENED: Record<string, Record<string, number>> = {
+  // ON-PREMISES DMZ: Exposed zone, can be reached from internet
+  'on-prem-dmz': {
+    'on-prem-dmz': 0.90,      // Same zone: allowed
+    'on-prem-internal': 0.70, // Outbound to internal: allowed (through FW-ONPREM)
+    'aws-public': 0.05,       // Cross-cloud inbound: BLOCKED by FW-AWS
+    'aws-private': 0.02,      // Cross-cloud to private: BLOCKED
+    'azure-public': 0.05,     // Cross-cloud inbound: BLOCKED
+    'azure-private': 0.02,    // Cross-cloud to private: BLOCKED
+    'vpn-gateway': 0.30,      // VPN: limited by FW-VPN
+  },
+  // ON-PREMISES INTERNAL: Protected by FW-ONPREM
+  'on-prem-internal': {
+    'on-prem-dmz': 0.85,      // Outbound to DMZ: allowed
+    'on-prem-internal': 0.90, // Same zone: allowed
+    'aws-public': 0.40,       // Outbound to AWS: allowed through FW-AWS (response)
+    'aws-private': 0.25,      // Outbound to AWS private: allowed
+    'azure-public': 0.40,     // Outbound to Azure: allowed
+    'azure-private': 0.25,    // Outbound to Azure private: allowed
+    'vpn-gateway': 0.70,      // VPN outbound: allowed
+  },
+  // AWS PUBLIC: Exposed zone
+  'aws-public': {
+    'on-prem-dmz': 0.05,      // Inbound to on-prem: BLOCKED by FW-ONPREM
+    'on-prem-internal': 0.02, // Inbound to internal: BLOCKED
+    'aws-public': 0.90,       // Same zone: allowed
+    'aws-private': 0.75,      // Outbound to AWS private: allowed (through FW-AWS)
+    'azure-public': 0.03,     // Cross-cloud: BLOCKED by both firewalls
+    'azure-private': 0.01,    // Cross-cloud to private: BLOCKED
+    'vpn-gateway': 0.10,      // VPN: limited
+  },
+  // AWS PRIVATE: Protected by FW-AWS
+  'aws-private': {
+    'on-prem-dmz': 0.30,      // Outbound to DMZ: allowed
+    'on-prem-internal': 0.50, // Outbound to on-prem internal: allowed
+    'aws-public': 0.85,       // Outbound to AWS public: allowed
+    'aws-private': 0.90,      // Same zone: allowed
+    'azure-public': 0.15,     // Cross-cloud outbound: limited
+    'azure-private': 0.10,    // Cross-cloud: limited
+    'vpn-gateway': 0.40,      // VPN: allowed
+  },
+  // AZURE PUBLIC: Exposed zone
+  'azure-public': {
+    'on-prem-dmz': 0.05,      // Inbound to on-prem: BLOCKED
+    'on-prem-internal': 0.02, // Inbound to internal: BLOCKED
+    'aws-public': 0.03,       // Cross-cloud: BLOCKED
+    'aws-private': 0.01,      // Cross-cloud to private: BLOCKED
+    'azure-public': 0.90,     // Same zone: allowed
+    'azure-private': 0.75,    // Outbound to Azure private: allowed
+    'vpn-gateway': 0.10,      // VPN: limited
+  },
+  // AZURE PRIVATE: Protected by FW-AZURE
+  'azure-private': {
+    'on-prem-dmz': 0.30,      // Outbound to DMZ: allowed
+    'on-prem-internal': 0.50, // Outbound to on-prem: allowed
+    'aws-public': 0.15,       // Cross-cloud outbound: limited
+    'aws-private': 0.10,      // Cross-cloud: limited
+    'azure-public': 0.85,     // Outbound to Azure public: allowed
+    'azure-private': 0.90,    // Same zone: allowed
+    'vpn-gateway': 0.40,      // VPN: allowed
+  },
+  // VPN GATEWAY: Controlled by FW-VPN
+  'vpn-gateway': {
+    'on-prem-dmz': 0.60,      // Outbound to DMZ: allowed
+    'on-prem-internal': 0.80, // Outbound to internal: allowed
+    'aws-public': 0.30,       // Outbound to cloud: allowed
+    'aws-private': 0.20,      // Outbound to cloud private: allowed
+    'azure-public': 0.30,     // Outbound to cloud: allowed
+    'azure-private': 0.20,    // Outbound to cloud private: allowed
+    'vpn-gateway': 0.90,      // Same zone: allowed
+  },
+  // Legacy zones
+  'dmz':      { dmz: 0.90, internal: 0.70, restricted: 0.05, airgap: 0.00 },
+  'internal': { dmz: 0.85, internal: 0.90, restricted: 0.40, airgap: 0.00 },
+  'restricted': { dmz: 0.10, internal: 0.30, restricted: 0.80, airgap: 0.02 },
+  'airgap':   { dmz: 0.00, internal: 0.00, restricted: 0.01, airgap: 0.70 },
+}
+
+// Define environments and their zones
+const ENVIRONMENTS = {
+  'on-prem': { 
+    name: 'On-Premises', 
+    zones: ['on-prem-dmz', 'on-prem-internal'],
+    firewall: { name: 'FW-ONPREM-PALOALTO', vendor: 'Palo Alto Networks', model: 'PA-5260' }
+  },
+  'aws': { 
+    name: 'AWS Cloud', 
+    zones: ['aws-public', 'aws-private'],
+    firewall: { name: 'FW-AWS-FORTIGATE', vendor: 'Fortinet', model: 'FortiGate-3700F' }
+  },
+  'azure': { 
+    name: 'Azure Cloud', 
+    zones: ['azure-public', 'azure-private'],
+    firewall: { name: 'FW-AZURE-CISCO', vendor: 'Cisco', model: 'Secure Firewall 4200' }
+  },
+  'vpn': { 
+    name: 'VPN Infrastructure', 
+    zones: ['vpn-gateway'],
+    firewall: { name: 'FW-VPN-CHECKPOINT', vendor: 'Check Point', model: 'Quantum 16200' }
+  }
+}
+
+// Firewall-specific vulnerability - represents firewall misconfigurations or weaknesses
+const FIREWALL_VULNS: Vulnerability[] = [
+  { 
+    id: 'FW-OUTBOUND-UNRESTRICTED', 
+    title: 'Outbound Rules Unrestricted', 
+    severity: 'medium', 
+    cvss: 5.3, 
+    epss: 0.35, 
+    attack_complexity: 0.6, 
+    privileges_required: 'none', 
+    cisa_kev: false, 
+    ransomware: false, 
+    kill_chain_phase: 'exfiltration', 
+    mitre_techniques: ['T1048', 'T1041'] 
+  },
+  { 
+    id: 'FW-VPN-SPLIT-TUNNEL', 
+    title: 'VPN Split Tunneling Enabled', 
+    severity: 'medium', 
+    cvss: 5.9, 
+    epss: 0.42, 
+    attack_complexity: 0.5, 
+    privileges_required: 'none', 
+    cisa_kev: false, 
+    ransomware: false, 
+    kill_chain_phase: 'initial_access', 
+    mitre_techniques: ['T1132', 'T1573'] 
+  },
+]
+
 const generateAssets = (): Asset[] => {
-  const types: Asset['type'][] = ['vm', 'firewall', 'server', 'cloud_resource', 'container', 'paas']
+  const types: Asset['type'][] = ['vm', 'server', 'cloud_resource', 'container', 'paas']
   const zones: Asset['network_zone'][] = ['on-prem-dmz', 'on-prem-internal', 'aws-public', 'aws-private', 'azure-public', 'azure-private', 'vpn-gateway']
   const businessUnits = ['Finance', 'Engineering', 'Operations', 'HR', 'Legal', 'IT', 'Sales', 'Marketing']
 
@@ -130,12 +273,59 @@ const generateAssets = (): Asset[] => {
     return x - Math.floor(x);
   };
 
-  return Array.from({ length: 5000 }, (_, i) => {
+  const assets: Asset[] = []
+  let assetIdx = 1
+
+  // ============================================
+  // STEP 1: Create hardened firewalls per environment
+  // ============================================
+  for (const [envKey, env] of Object.entries(ENVIRONMENTS)) {
+    const fw = env.firewall
+    const zone = env.zones[0] // Place firewall in first zone of environment
+    
+    // Determine if firewall is internet-facing (DMZ or public zones)
+    const isInternetFacing = zone.includes('dmz') || zone.includes('public')
+    
+    // Firewalls get specific vulnerabilities + random ones
+    const fwVulns: Vulnerability[] = [...FIREWALL_VULNS]
+    
+    // Internet-facing firewalls are more exposed
+    if (isInternetFacing) {
+      const entryVulns = VULN_DB.filter(v => v.kill_chain_phase === 'initial_access')
+      if (entryVulns.length > 0) {
+        fwVulns.push({ ...entryVulns[Math.floor(random() * entryVulns.length)] })
+      }
+    }
+
+    assets.push({
+      id: `firewall-${envKey}`,
+      name: fw.name,
+      type: 'firewall',
+      ip: zone.includes('aws') ? '172.16.0.1' : zone.includes('azure') ? '192.168.0.1' : zone === 'vpn-gateway' ? '10.255.0.1' : '10.0.0.1',
+      network_zone: zone,
+      criticality: 5, // Firewalls are always critical
+      internet_facing: isInternetFacing,
+      business_unit: 'IT Security',
+      annual_revenue_exposure: 5000000,
+      vulnerabilities: fwVulns
+    })
+    assetIdx++
+  }
+
+  // ============================================
+  // STEP 2: Create regular assets (VMs, servers, etc.)
+  // ============================================
+  const numRegularAssets = 4996 // Total 5000 - 4 firewalls
+  
+  for (let i = 0; i < numRegularAssets; i++) {
     const type = types[Math.floor(random() * types.length)]
     const zone = zones[Math.floor(random() * zones.length)]
-    const internetFacing = zone.includes('dmz') || zone.includes('public') || (zone.includes('internal') && random() > 0.95)
+    // Hardened: only DMZ and public zones are internet-facing
+    // Internal zones are protected by firewalls
+    const internetFacing = zone.includes('dmz') || zone.includes('public')
     const numVulns = Math.floor(random() * 4) + 1
     const vulns: Vulnerability[] = []
+    
     if (internetFacing) {
       const entryVulns = VULN_DB.filter(v => v.kill_chain_phase === 'initial_access')
       if (entryVulns.length > 0) vulns.push({ ...entryVulns[Math.floor(random() * entryVulns.length)] })
@@ -146,7 +336,6 @@ const generateAssets = (): Asset[] => {
     
     let namePrefix = 'ASSET'
     if (type === 'vm') namePrefix = random() > 0.5 ? 'WIN-VM' : 'LNX-VM'
-    else if (type === 'firewall') namePrefix = `FW-${['Cisco', 'PaloAlto', 'Fortinet'][Math.floor(random() * 3)]}`
     else if (type === 'server') namePrefix = random() > 0.5 ? 'WIN-SRV' : 'LNX-SRV'
     else if (type === 'cloud_resource') namePrefix = zone.includes('aws') ? 'AWS-EC2' : 'AZURE-VM'
     else if (type === 'container') namePrefix = 'K8S-POD'
@@ -157,9 +346,9 @@ const generateAssets = (): Asset[] => {
     else if (zone.includes('azure')) ipPrefix = '192.168'
     else if (zone === 'vpn-gateway') ipPrefix = '10.255'
 
-    return {
-      id: `asset-${i + 1}`,
-      name: `${namePrefix}-${String(i + 1).padStart(5, '0')}`,
+    assets.push({
+      id: `asset-${assetIdx}`,
+      name: `${namePrefix}-${String(assetIdx).padStart(5, '0')}`,
       type, 
       ip: `${ipPrefix}.${Math.floor(random() * 255)}.${Math.floor(random() * 255)}`,
       network_zone: zone, 
@@ -168,8 +357,11 @@ const generateAssets = (): Asset[] => {
       business_unit: businessUnits[Math.floor(random() * businessUnits.length)],
       annual_revenue_exposure: Math.floor(random() * 10000000) + 100000,
       vulnerabilities: vulns
-    }
-  })
+    })
+    assetIdx++
+  }
+
+  return assets
 }
 
 const INITIAL_ASSETS = generateAssets()
@@ -422,20 +614,8 @@ const privilegeGained = (vuln: Vulnerability): number => {
   return getAttackerCapability(vuln).localPrivilege
 }
 
-// Network zone transition reachability matrix
-const ZONE_REACH: Record<string, Record<string, number>> = {
-  'on-prem-dmz':      { 'on-prem-dmz': 0.90, 'on-prem-internal': 0.60, 'aws-public': 0.40, 'aws-private': 0.10, 'azure-public': 0.40, 'azure-private': 0.10, 'vpn-gateway': 0.80 },
-  'on-prem-internal': { 'on-prem-dmz': 0.80, 'on-prem-internal': 0.90, 'aws-public': 0.30, 'aws-private': 0.50, 'azure-public': 0.30, 'azure-private': 0.50, 'vpn-gateway': 0.90 },
-  'aws-public':       { 'on-prem-dmz': 0.40, 'on-prem-internal': 0.10, 'aws-public': 0.90, 'aws-private': 0.60, 'azure-public': 0.30, 'azure-private': 0.10, 'vpn-gateway': 0.70 },
-  'aws-private':      { 'on-prem-dmz': 0.10, 'on-prem-internal': 0.50, 'aws-public': 0.80, 'aws-private': 0.90, 'azure-public': 0.10, 'azure-private': 0.40, 'vpn-gateway': 0.80 },
-  'azure-public':     { 'on-prem-dmz': 0.40, 'on-prem-internal': 0.10, 'aws-public': 0.30, 'aws-private': 0.10, 'azure-public': 0.90, 'azure-private': 0.60, 'vpn-gateway': 0.70 },
-  'azure-private':    { 'on-prem-dmz': 0.10, 'on-prem-internal': 0.50, 'aws-public': 0.10, 'aws-private': 0.40, 'azure-public': 0.80, 'azure-private': 0.90, 'vpn-gateway': 0.80 },
-  'vpn-gateway':      { 'on-prem-dmz': 0.80, 'on-prem-internal': 0.90, 'aws-public': 0.70, 'aws-private': 0.80, 'azure-public': 0.70, 'azure-private': 0.80, 'vpn-gateway': 0.90 },
-  dmz:                { dmz: 0.90, internal: 0.60, restricted: 0.10, airgap: 0.00 },
-  internal:           { dmz: 0.80, internal: 0.90, restricted: 0.30, airgap: 0.00 },
-  restricted:         { dmz: 0.20, internal: 0.40, restricted: 0.80, airgap: 0.05 },
-  airgap:             { dmz: 0.00, internal: 0.00, restricted: 0.05, airgap: 0.70 },
-}
+// Use hardened zone reachability for all computations
+const ZONE_REACH = ZONE_REACH_HARDENED
 
 const TECH_TO_BIT = new Map<string, number>()
 let nextBit = 0
