@@ -286,12 +286,140 @@ const PHASE_ORDER = new Map<string, number>(
 // Privilege levels: none=0, low=1, high=2
 const PRIV_LEVEL: Record<string, number> = { none: 0, low: 1, high: 2 }
 
-// Privilege gained after exploiting a vulnerability (by kill-chain phase)
-const privilegeGained = (vuln: Vulnerability): number => {
+// ============================================================================
+// SOPHISTICATED ATTACKER CAPABILITY MODEL
+// 
+// Models what an attacker gains from exploiting each vulnerability:
+// 1. LOCAL_PRIVILEGE: What privilege level they get ON THE CURRENT machine
+// 2. CREDENTIAL_LEVEL: What credential level they obtain (works cross-machine)
+// 3. REMOTE_CAPABILITY: Whether this vuln enables remote attacks on other machines
+//
+// This enables realistic attack path modeling where:
+// - credential_access steals credentials usable on other machines
+// - privilege_escalation gives admin but only on current machine
+// - initial_access/lateral_movement are remotely triggerable
+// ============================================================================
+
+interface AttackerCapability {
+  localPrivilege: number      // Privilege on the current machine (0-2)
+  credentialLevel: number     // Credential strength for cross-machine access (0-2)
+  isRemoteExploitable: boolean // Can be triggered from another machine
+  enablesLateralMovement: boolean // Explicitly enables moving to other machines
+}
+
+// Analyze what capabilities an attacker gains from exploiting a vulnerability
+const getAttackerCapability = (vuln: Vulnerability): AttackerCapability => {
   const phase = vuln.kill_chain_phase
-  if (phase === 'credential_access' || phase === 'privilege_escalation') return 2
-  if (phase === 'lateral_movement' || phase === 'execution' || phase === 'initial_access') return 1
-  return 1 // default to 1 so paths don't get stuck
+  const priv = PRIV_LEVEL[vuln.privileges_required] ?? 0
+  
+  // Default: no special capabilities
+  let localPrivilege = 0
+  let credentialLevel = 0
+  let isRemoteExploitable = false
+  let enablesLateralMovement = false
+  
+  switch (phase) {
+    case 'initial_access':
+      // Entry point - remotely exploitable, gives foothold
+      localPrivilege = 1  // Usually user-level access
+      credentialLevel = 0 // No cross-machine creds yet
+      isRemoteExploitable = true
+      enablesLateralMovement = false
+      break
+      
+    case 'execution':
+      // Code execution - can be remote or local
+      localPrivilege = Math.max(1, priv) // At least user if executing code
+      credentialLevel = 0
+      isRemoteExploitable = vuln.attack_complexity < 0.5 // Low complexity = remote possible
+      enablesLateralMovement = false
+      break
+      
+    case 'persistence':
+      // Maintaining access - builds on existing privilege
+      localPrivilege = Math.max(1, priv)
+      credentialLevel = 0
+      isRemoteExploitable = false
+      enablesLateralMovement = false
+      break
+      
+    case 'privilege_escalation':
+      // Getting admin/system on current machine
+      localPrivilege = 2  // High privilege
+      credentialLevel = 1 // May get user creds, but not domain admin
+      isRemoteExploitable = false
+      enablesLateralMovement = true // Admin access enables more lateral movement
+      break
+      
+    case 'defense_evasion':
+      // Avoiding detection - maintains current privilege
+      localPrivilege = Math.max(1, priv)
+      credentialLevel = 0
+      isRemoteExploitable = false
+      enablesLateralMovement = false
+      break
+      
+    case 'credential_access':
+      // THE KEY FOR LATERAL MOVEMENT - steals credentials
+      localPrivilege = Math.max(1, priv)
+      credentialLevel = 2 // High-value credentials work across machines
+      isRemoteExploitable = false
+      enablesLateralMovement = true // Credentials enable lateral movement
+      break
+      
+    case 'discovery':
+      // Reconnaissance - low privilege impact
+      localPrivilege = Math.max(0, priv)
+      credentialLevel = 0
+      isRemoteExploitable = false
+      enablesLateralMovement = false
+      break
+      
+    case 'lateral_movement':
+      // Moving between machines - this IS the lateral movement
+      localPrivilege = 1 // Get user-level on new machine
+      credentialLevel = 1 // May obtain new credentials
+      isRemoteExploitable = true // This is how lateral movement works
+      enablesLateralMovement = true
+      break
+      
+    case 'collection':
+      // Gathering data - needs existing access
+      localPrivilege = Math.max(1, priv)
+      credentialLevel = 0
+      isRemoteExploitable = false
+      enablesLateralMovement = false
+      break
+      
+    case 'exfiltration':
+      // Stealing data - needs existing access
+      localPrivilege = Math.max(1, priv)
+      credentialLevel = 0
+      isRemoteExploitable = vuln.attack_complexity < 0.3 // Some exfil is remote
+      enablesLateralMovement = false
+      break
+      
+    case 'impact':
+      // Final damage - needs existing access
+      localPrivilege = Math.max(priv, 1)
+      credentialLevel = 0
+      isRemoteExploitable = false
+      enablesLateralMovement = false
+      break
+      
+    default:
+      localPrivilege = 1
+      credentialLevel = 0
+      isRemoteExploitable = false
+      enablesLateralMovement = false
+  }
+  
+  return { localPrivilege, credentialLevel, isRemoteExploitable, enablesLateralMovement }
+}
+
+// Legacy function for backward compatibility
+const privilegeGained = (vuln: Vulnerability): number => {
+  return getAttackerCapability(vuln).localPrivilege
 }
 
 // Network zone transition reachability matrix
@@ -356,11 +484,12 @@ const buildSparseGraph = async (nodes: GraphNode[], setProgress?: (p: number) =>
   const n = nodes.length
   const adjList: Edge[][] = Array.from({ length: n }, () => [])
 
-  // Track maximum privilege each node can grant — used for gate checks
-  const maxPrivGained = nodes.map(n => privilegeGained(n.vuln))
+  // Precompute attacker capabilities for all nodes
+  const capabilities = nodes.map(n => getAttackerCapability(n.vuln))
 
   // Precompute expensive properties for all nodes
-  const nodeData = nodes.map(node => {
+  const nodeData = nodes.map((node, idx) => {
+    const cap = capabilities[idx]
     const pExploit = safeNum(node.vuln.epss, 0.5) * (1 - safeNum(node.vuln.attack_complexity, 0.5))
     const threatMult = (node.vuln.cisa_kev ? 1.5 : 1.0) * (node.vuln.ransomware ? 1.2 : 1.0)
     const phase = PHASE_ORDER.get(node.vuln.kill_chain_phase) ?? 0
@@ -368,7 +497,13 @@ const buildSparseGraph = async (nodes: GraphNode[], setProgress?: (p: number) =>
     const techMask = getAssetTechMask(node.asset)
     const zone = node.asset.network_zone
     const assetId = node.asset.id
-    return { pExploit, threatMult, phase, privReq, techMask, zone, assetId }
+    return { 
+      pExploit, threatMult, phase, privReq, techMask, zone, assetId,
+      localPriv: cap.localPrivilege,
+      credLevel: cap.credentialLevel,
+      isRemote: cap.isRemoteExploitable,
+      enablesLateral: cap.enablesLateralMovement
+    }
   })
 
   const CHUNK_SIZE = 50
@@ -384,12 +519,13 @@ const buildSparseGraph = async (nodes: GraphNode[], setProgress?: (p: number) =>
     await new Promise(r => setTimeout(r, 0)) // yield to event loop
     
     for (let i = chunk.start; i < chunk.end; i++) {
-      const srcPhase = nodeData[i].phase
-      const attackerPrivAfterSrc = maxPrivGained[i]
-      const srcZone = nodeData[i].zone
-      const srcMask = nodeData[i].techMask
-
-      const srcAssetId = nodeData[i].assetId
+      const srcData = nodeData[i]
+      const srcPhase = srcData.phase
+      const srcZone = srcData.zone
+      const srcMask = srcData.techMask
+      const srcAssetId = srcData.assetId
+      const srcLocalPriv = srcData.localPriv
+      const srcCredLevel = srcData.credLevel
 
       const edgesForI: Edge[] = []
 
@@ -397,28 +533,65 @@ const buildSparseGraph = async (nodes: GraphNode[], setProgress?: (p: number) =>
         if (i === j) continue
 
         const tgtData = nodeData[j]
+        let edgeAllowed = false
+        let edgeWeightMultiplier = 1.0
 
-        // Gate 1: kill chain must progress or stay (no backwards jumps > 1 step)
-        // ONLY applies if moving within the same machine. If moving laterally, the kill chain resets.
+        // ============================================
+        // SAME MACHINE: Kill chain progression within asset
+        // ============================================
         if (srcAssetId === tgtData.assetId) {
-          if (tgtData.phase < srcPhase - 1) continue
-        } else {
-          // LATERAL MOVEMENT: Target must be remotely exploitable OR attacker can continue kill chain
-          // after gaining privilege on the source machine.
-          // Remotely exploitable phases: initial_access (0), execution (1), lateral_movement (7)
-          // Additionally, if attacker has high privilege (from cred_access/priv_esc on source),
-          // they can target more vulnerability types on the new machine.
-          const isRemoteExploitable = tgtData.phase === 0 || tgtData.phase === 1 || tgtData.phase === 7
-          const hasHighPrivAfterSrc = attackerPrivAfterSrc >= 2
-          const canContinueKillChain = hasHighPrivAfterSrc && tgtData.phase >= 0 && tgtData.phase <= 7
+          // Kill chain must progress (allow 1 step back for flexibility)
+          if (tgtData.phase >= srcPhase - 1) {
+            // Privilege check: attacker's local privilege must meet target's requirement
+            if (srcLocalPriv >= tgtData.privReq) {
+              edgeAllowed = true
+            }
+          }
+        } 
+        // ============================================
+        // LATERAL MOVEMENT: Cross-machine exploitation
+        // ============================================
+        else {
+          // Method 1: Direct remote exploitation of target
+          // Target vulnerability must be remotely exploitable
+          if (tgtData.isRemote) {
+            // Remote vulns with privileges_required=none are always exploitable
+            // Remote vulns with privileges_required=low/high need credentials
+            if (tgtData.privReq === 0) {
+              edgeAllowed = true
+              edgeWeightMultiplier = 1.0
+            } else if (tgtData.privReq <= srcCredLevel) {
+              // Attacker has credentials that work on target
+              edgeAllowed = true
+              edgeWeightMultiplier = 0.9 // Slightly harder with auth
+            }
+          }
           
-          if (!isRemoteExploitable && !canContinueKillChain) continue
+          // Method 2: Credential-based lateral movement
+          // Attacker has credentials from credential_access or privilege_escalation
+          if (!edgeAllowed && srcCredLevel > 0) {
+            // Credentials can be used to exploit vulnerabilities requiring authentication
+            // The target can be ANY vulnerability type if attacker has valid credentials
+            if (tgtData.privReq <= srcCredLevel) {
+              edgeAllowed = true
+              edgeWeightMultiplier = 0.85 // Credential-based access
+            }
+          }
+          
+          // Method 3: Lateral movement technique
+          // Source node explicitly enables lateral movement (e.g., Pass-the-Hash)
+          if (!edgeAllowed && srcData.enablesLateral) {
+            // Can target vulnerabilities that accept the available credentials
+            if (tgtData.privReq <= Math.max(srcLocalPriv, srcCredLevel)) {
+              edgeAllowed = true
+              edgeWeightMultiplier = 0.8 // Lateral movement technique
+            }
+          }
         }
 
-        // Gate 2: privilege check — attacker must have enough privilege for target
-        if (attackerPrivAfterSrc < tgtData.privReq) continue
+        if (!edgeAllowed) continue
 
-        // Gate 3: network reachability (inlined for performance)
+        // Gate: network reachability
         const baseReach = ZONE_REACH[srcZone]?.[tgtData.zone] ?? 0.1
         const overlap = popcount(srcMask & tgtData.techMask)
         const techBonus = Math.min(0.25, overlap * 0.08)
@@ -429,18 +602,18 @@ const buildSparseGraph = async (nodes: GraphNode[], setProgress?: (p: number) =>
         // Phase continuity bonus: forward progress in kill chain is more likely
         const phaseContinuity = tgtData.phase >= srcPhase ? 1.2 : 0.85
 
-        // Massive bonus for moving within the same machine to ensure intra-machine kill chains are not dropped
+        // Massive bonus for moving within the same machine to ensure intra-machine kill chains
         const sameMachineBonus = srcAssetId === tgtData.assetId ? 10.0 : 1.0
 
-        const rawWeight = tgtData.pExploit * reach * tgtData.threatMult * phaseContinuity * sameMachineBonus
+        const rawWeight = tgtData.pExploit * reach * tgtData.threatMult * phaseContinuity * sameMachineBonus * edgeWeightMultiplier
         const weight = Math.min(0.999, rawWeight)
         if (weight < 0.0001) continue
 
         edgesForI.push({
           to: j,
           weight,
-          logCost: -Math.log(Math.max(weight, 1e-9)),  // for Dijkstra/Yen's
-          sortWeight: rawWeight, // Uncapped weight for sorting
+          logCost: -Math.log(Math.max(weight, 1e-9)),
+          sortWeight: rawWeight,
         } as Edge & { sortWeight: number })
       }
 
@@ -904,99 +1077,114 @@ const discoverAttackPaths = async (nodes: GraphNode[], adjList: Edge[][], setPro
   const n = nodes.length
   if (n === 0) return []
 
-  // Entry points: internet-facing nodes, sorted by PPR score (fallback to EPSS if PPR is 0)
-  const entryIdxs = nodes
-    .map((nd, i) => ({ i, score: nd.asset.internet_facing ? (nd.pprScore > 0 ? nd.pprScore * 1.5 : nd.vuln.epss * 0.0001) : 0 }))
-    .filter(e => e.score > 0 && adjList[e.i].length > 0)
+  // ============================================
+  // STEP 1: Identify Entry Points
+  // Entry points are internet-facing nodes with remotely exploitable vulnerabilities
+  // These are the actual attack entry vectors
+  // ============================================
+  const entryCandidates = nodes
+    .map((nd, i) => {
+      const cap = getAttackerCapability(nd.vuln)
+      // Must be internet-facing AND have a remotely exploitable vulnerability (initial_access)
+      if (!nd.asset.internet_facing) return { i, score: 0, valid: false }
+      if (!cap.isRemote && nd.vuln.kill_chain_phase !== 'initial_access') return { i, score: 0, valid: false }
+      
+      // Score based on exploitability and threat level
+      const epssScore = safeNum(nd.vuln.epss, 0.5)
+      const kevBonus = nd.vuln.cisa_kev ? 1.5 : 1.0
+      const ransomwareBonus = nd.vuln.ransomware ? 1.3 : 1.0
+      const pprBonus = nd.pprScore > 0 ? 1 + nd.pprScore * 10 : 1
+      
+      return { 
+        i, 
+        score: epssScore * kevBonus * ransomwareBonus * pprBonus,
+        valid: true
+      }
+    })
+    .filter(e => e.valid && e.score > 0 && adjList[e.i].length > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, 10)
+    .slice(0, 15)
     .map(e => e.i)
 
-  // Target nodes: prioritize high-criticality + high blast-radius + actually reachable nodes
-  // We need to ensure targets can be reached from entry points via the graph
-  const reachableFromEntry = new Set<number>()
+  if (entryCandidates.length === 0) return []
+
+  // ============================================
+  // STEP 2: Find All Reachable Nodes from Entry Points
+  // Run Dijkstra from ALL entry points to build a complete reachability map
+  // ============================================
+  const reachableFromEntry = new Map<number, { dist: number; entryIdx: number }>()
   
-  // First, do a quick BFS from entry points to find reachable nodes (limit depth for performance)
-  const entryPointsForBFS = entryIdxs.slice(0, 5)
-  const visited = new Set<number>()
-  const queue: { node: number; depth: number }[] = entryPointsForBFS.map(i => ({ node: i, depth: 0 }))
-  
-  while (queue.length > 0) {
-    const { node, depth } = queue.shift()!
-    if (visited.has(node) || depth > 8) continue
-    visited.add(node)
-    reachableFromEntry.add(node)
-    
-    for (const edge of adjList[node] || []) {
-      if (!visited.has(edge.to)) {
-        queue.push({ node: edge.to, depth: depth + 1 })
+  for (const entryIdx of entryCandidates) {
+    const { dist } = dijkstra(adjList, entryIdx, new Set(), new Set())
+    for (let i = 0; i < n; i++) {
+      if (isFinite(dist[i]) && dist[i] < 100) { // Limit to reasonable path lengths
+        const existing = reachableFromEntry.get(i)
+        if (!existing || dist[i] < existing.dist) {
+          reachableFromEntry.set(i, { dist: dist[i], entryIdx })
+        }
       }
     }
   }
-  
-  // Score targets based on criticality, blast radius, AND reachability
-  const targetIdxSet = new Set(
-    nodes
-      .map((nd, i) => ({ 
-        i, 
-        score: nd.asset.criticality * (nd.blastRadius > 0 ? nd.blastRadius : 0.0001),
-        reachable: reachableFromEntry.has(i)
-      }))
-      .sort((a, b) => {
-        // Prioritize reachable nodes, then by score
-        if (a.reachable !== b.reachable) return a.reachable ? -1 : 1
-        return b.score - a.score
-      })
-      .slice(0, 20)
-      .map(e => e.i)
-  )
 
+  // ============================================
+  // STEP 3: Identify Target Nodes
+  // High-value targets that are REACHABLE from entry points
+  // ============================================
+  const targetCandidates = nodes
+    .map((nd, i) => {
+      const reachability = reachableFromEntry.get(i)
+      if (!reachability) return { i, score: 0, valid: false }
+      
+      // Score based on business impact
+      const criticality = nd.asset.criticality
+      const blastRadius = nd.blastRadius > 0 ? nd.blastRadius : 0.001
+      const revenueExposure = Math.log10(Math.max(1, nd.asset.annual_revenue_exposure)) / 7 // Normalized
+      
+      const impactScore = criticality * 2 + blastRadius * 5 + revenueExposure
+      const pathPenalty = reachability.dist * 0.1 // Slight penalty for longer paths
+      
+      return { 
+        i, 
+        score: Math.max(0, impactScore - pathPenalty),
+        valid: true,
+        dist: reachability.dist
+      }
+    })
+    .filter(e => e.valid && e.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 20)
+    .map(e => e.i)
+
+  // ============================================
+  // STEP 4: Find K-Shortest Paths Using Yen's Algorithm
+  // ============================================
   const allPaths: AttackPath[] = []
   const usedSigs = new Set<string>()
-  const K_PATHS = 3  // Yen's: top-K paths per entry→target pair
-
-  // If no entry points or targets found, create fallback targets
-  if (entryIdxs.length === 0 || targetIdxSet.size === 0) {
-    // Use high-risk nodes as both entry and target fallback
-    const fallbackEntries = nodes
-      .map((nd, i) => ({ i, score: nd.risk }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 10)
-      .map(e => e.i)
-    
-    const fallbackTargets = nodes
-      .map((nd, i) => ({ i, score: nd.asset.criticality }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 15)
-      .map(e => e.i)
-    
-    entryIdxs.push(...fallbackEntries.filter(i => !entryIdxs.includes(i)))
-    fallbackTargets.forEach(i => targetIdxSet.add(i))
-  }
+  const K_PATHS = 3
 
   let pathsProcessed = 0
-  const totalPairs = entryIdxs.length * targetIdxSet.size || 1
+  const totalPairs = entryCandidates.length * targetCandidates.length
 
-  for (const entryIdx of entryIdxs) {
-    for (const targetIdx of targetIdxSet) {
+  for (const entryIdx of entryCandidates) {
+    for (const targetIdx of targetCandidates) {
       if (entryIdx === targetIdx) continue
 
       pathsProcessed++
-      // Yield on every pair to keep UI responsive during heavy Dijkstra
       await new Promise(r => setTimeout(r, 0))
       if (setProgress) setProgress(75 + (pathsProcessed / totalPairs) * 5)
 
-      // Yen's K-Shortest Paths in log-cost space
+      // Yen's K-Shortest Paths
       const A: { path: number[]; logCost: number }[] = []
 
-      // First shortest path via Dijkstra
+      // First shortest path
       const { dist: d0, prev: p0 } = dijkstra(adjList, entryIdx, new Set(), new Set())
       if (!isFinite(d0[targetIdx])) continue
+      
       const first = reconstructPath(Array.from(p0), entryIdx, targetIdx)
       if (first.length < 2) continue
       A.push({ path: first, logCost: d0[targetIdx] })
 
-      // Yen's spur iterations for K-1 additional paths
+      // Yen's spur iterations
       const B: { path: number[]; logCost: number }[] = []
       for (let k = 1; k < K_PATHS; k++) {
         const prevPath = A[k - 1].path
@@ -1004,14 +1192,12 @@ const discoverAttackPaths = async (nodes: GraphNode[], adjList: Edge[][], setPro
           const spurNode = prevPath[i]
           const rootPath = prevPath.slice(0, i + 1)
 
-          // Block edges already used by earlier A-paths with the same root
           const blocked = new Set<number>()
           for (const ap of A) {
             if (ap.path.length > i && pathsEqual(ap.path, rootPath, i + 1)) {
               blocked.add(ap.path[i] * 10000 + ap.path[i + 1])
             }
           }
-          // Block nodes in root path (except spur node) to prevent loops
           const blockedNodes = new Set(rootPath.slice(0, -1))
 
           const { dist: dSpur, prev: pSpur } = dijkstra(adjList, spurNode, blocked, blockedNodes)
@@ -1022,7 +1208,6 @@ const discoverAttackPaths = async (nodes: GraphNode[], adjList: Edge[][], setPro
 
           const totalPath = [...rootPath.slice(0, -1), ...spurPath]
 
-          // Compute logCost for total path
           let totalLogCost = 0
           for (let s = 0; s < totalPath.length - 1; s++) {
             const u = totalPath[s], v = totalPath[s + 1]
@@ -1040,7 +1225,7 @@ const discoverAttackPaths = async (nodes: GraphNode[], adjList: Edge[][], setPro
         A.push(B.shift()!)
       }
 
-      // Convert each path to AttackPath
+      // Convert paths to AttackPath objects
       for (const { path, logCost } of A) {
         const sig = path.join('|')
         if (usedSigs.has(sig)) continue
@@ -1048,62 +1233,50 @@ const discoverAttackPaths = async (nodes: GraphNode[], adjList: Edge[][], setPro
 
         const pathNodes = path.map(i => nodes[i])
         const prob = computeChainProbability(path, adjList)
-
-        // Wilson score CI with effective sample n = path length × 10
         const ci = wilsonInterval(prob, path.length * 10)
 
         // === AUTONOMOUS AI-DRIVEN RISK SCORING MODEL ===
         const pathLength = pathNodes.length
         
         // 1. Structural Vulnerability (0-10)
-        // Evaluates the inherent weakness of the nodes in the path
         const maxNodeRisk = Math.max(...pathNodes.map(nd => nd.risk))
         const avgNodeRisk = pathNodes.reduce((s, nd) => s + nd.risk, 0) / pathLength
         const structuralRisk = (maxNodeRisk * 0.7) + (avgNodeRisk * 0.3)
         
         // 2. Exploitability (0-10)
-        // Evaluates the likelihood of successful traversal
         const kevCount = pathNodes.filter(nd => nd.vuln.cisa_kev).length
         const ransomwareCount = pathNodes.filter(nd => nd.vuln.ransomware).length
         const activeThreatMultiplier = 1 + (kevCount * 0.4) + (ransomwareCount * 0.4)
         
-        // prob is the Bayesian probability of the chain (0 to 1)
-        // We use a logarithmic scale to differentiate small probabilities
         const baseExploitability = prob > 0 ? (10 + Math.max(-10, Math.log10(prob)) * 2) : 0
         const exploitability = Math.min(10, Math.max(0, baseExploitability) * activeThreatMultiplier)
         
         // 3. Business Impact (0-10)
-        // Evaluates the damage if the target is compromised
         const targetNode = pathNodes[pathLength - 1]
-        const criticalityScore = (targetNode.asset.criticality / 5) * 10 // 2 to 10
-        const blastRadiusScore = Math.min(10, (targetNode.blastRadius || 0) * 100) // Scale up PPR
+        const criticalityScore = (targetNode.asset.criticality / 5) * 10
+        const blastRadiusScore = Math.min(10, (targetNode.blastRadius || 0) * 100)
         const financialExposure = targetNode.asset.annual_revenue_exposure || 0
-        const financialScore = Math.min(10, (financialExposure / 1000000) * 2) // 1M = 2, 5M = 10
+        const financialScore = Math.min(10, (financialExposure / 1000000) * 2)
         
         const zones = new Set(pathNodes.map(nd => nd.asset.network_zone))
-        const lateralMovementPenalty = zones.size > 1 ? 1.5 : 0 // Penalty for crossing zones
+        const lateralMovementPenalty = zones.size > 1 ? 1.5 : 0
         
         const businessImpact = Math.min(10, (criticalityScore * 0.4) + (blastRadiusScore * 0.3) + (financialScore * 0.3) + lateralMovementPenalty)
         
         // 4. Autonomous Risk Synthesis
-        // Dynamically weight the factors based on the path's characteristics
         let riskScore = 0
         if (exploitability < 3) {
-          // Low likelihood path, impact matters less
           riskScore = (structuralRisk * 0.3) + (exploitability * 0.5) + (businessImpact * 0.2)
         } else if (businessImpact > 8) {
-          // High impact path, prioritize impact and exploitability
           riskScore = (structuralRisk * 0.2) + (exploitability * 0.4) + (businessImpact * 0.4)
         } else {
-          // Balanced path
           riskScore = (structuralRisk * 0.3) + (exploitability * 0.4) + (businessImpact * 0.3)
         }
         
-        // Apply path length decay (longer paths are exponentially harder to execute without detection)
+        // Apply path length decay
         const lengthDecay = Math.pow(0.92, Math.max(0, pathLength - 2))
         riskScore = riskScore * lengthDecay
         
-        // Final bounds check
         riskScore = Math.max(0.1, Math.min(10.0, riskScore))
 
         const techniques = new Set<string>()
@@ -1125,66 +1298,6 @@ const discoverAttackPaths = async (nodes: GraphNode[], adjList: Edge[][], setPro
     if (allPaths.length >= 20) break
   }
 
-  // Fallback: If no paths found, generate paths based on graph connectivity
-  // This ensures the dashboard always shows meaningful attack paths
-  if (allPaths.length === 0 && entryIdxs.length > 0) {
-    // Create paths from entry points to their immediate neighbors
-    for (const entryIdx of entryIdxs.slice(0, 5)) {
-      const entryNode = nodes[entryIdx]
-      
-      // Find strong outgoing edges
-      const strongEdges = (adjList[entryIdx] || [])
-        .sort((a, b) => b.weight - a.weight)
-        .slice(0, 3)
-      
-      for (const edge of strongEdges) {
-        const targetNode = nodes[edge.to]
-        const pathNodes = [entryNode, targetNode]
-        
-        // Calculate risk for this 2-step path
-        const prob = edge.weight
-        const ci = wilsonInterval(prob, 20)
-        
-        const maxNodeRisk = Math.max(...pathNodes.map(nd => nd.risk))
-        const avgNodeRisk = pathNodes.reduce((s, nd) => s + nd.risk, 0) / pathNodes.length
-        const structuralRisk = (maxNodeRisk * 0.7) + (avgNodeRisk * 0.3)
-        
-        const kevCount = pathNodes.filter(nd => nd.vuln.cisa_kev).length
-        const ransomwareCount = pathNodes.filter(nd => nd.vuln.ransomware).length
-        const activeThreatMultiplier = 1 + (kevCount * 0.4) + (ransomwareCount * 0.4)
-        
-        const baseExploitability = prob > 0 ? (10 + Math.max(-10, Math.log10(prob)) * 2) : 0
-        const exploitability = Math.min(10, Math.max(0, baseExploitability) * activeThreatMultiplier)
-        
-        const criticalityScore = (targetNode.asset.criticality / 5) * 10
-        const blastRadiusScore = Math.min(10, (targetNode.blastRadius || 0) * 100)
-        const businessImpact = Math.min(10, (criticalityScore * 0.6) + (blastRadiusScore * 0.4))
-        
-        let riskScore = (structuralRisk * 0.3) + (exploitability * 0.4) + (businessImpact * 0.3)
-        riskScore = Math.max(0.1, Math.min(10.0, riskScore))
-        
-        const techniques = new Set<string>()
-        pathNodes.forEach(nd => nd.vuln.mitre_techniques?.forEach(t => techniques.add(t)))
-        
-        const sig = `${entryIdx}|${edge.to}`
-        if (usedSigs.has(sig)) continue
-        usedSigs.add(sig)
-        
-        allPaths.push({
-          id: `AP-${allPaths.length + 1}`,
-          nodes: pathNodes,
-          riskScore: Math.round(riskScore * 10) / 10,
-          attackProbability: Math.round(prob * 10000) / 10000,
-          confidenceInterval: ci,
-          mitreTechniques: Array.from(techniques),
-        })
-        
-        if (allPaths.length >= 10) break
-      }
-      if (allPaths.length >= 10) break
-    }
-  }
-  
   return allPaths
     .sort((a, b) => b.riskScore - a.riskScore)
     .slice(0, 10)
