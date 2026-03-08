@@ -35,6 +35,17 @@
 // LAYER 6: Complete Hybrid Engine (NEW)
 // - CompleteHybridEngine: Full GNN+Bayesian+MCTS+LLM integration
 // 
+// LAYER 7: Multi-Source Data Fusion (NEW)
+// - APIDiscoverySource: CMDB, Cloud, Virtualization, AD APIs
+// - PassiveNetFlowSource: Real-time network topology
+// - ActiveScanSource: Targeted vulnerability scanning
+// - SidescanSource: Validated attack paths
+// - EvidenceFusionEngine: Dempster-Shafer evidence combination
+// - MultiSourceFusionOrchestrator: Complete fusion pipeline
+// 
+// LAYER 8: Fused Attack Engine (NEW)
+// - FusedAttackEngine: Complete multi-source + attack path pipeline
+// 
 // ============================================================================
 
 // ============================================================================
@@ -188,6 +199,46 @@ export type {
 } from './complete-hybrid-engine'
 
 // ============================================================================
+// MULTI-SOURCE DATA FUSION ENGINE
+// ============================================================================
+
+export { APIDiscoverySource } from './multi-source-fusion-engine'
+export { PassiveNetFlowSource } from './multi-source-fusion-engine'
+export { ActiveScanSource } from './multi-source-fusion-engine'
+export { SidescanSource } from './multi-source-fusion-engine'
+export { EvidenceFusionEngine } from './multi-source-fusion-engine'
+export { MultiSourceFusionOrchestrator } from './multi-source-fusion-engine'
+export type {
+  DataSourceType,
+  DataSourceConfig,
+  FusionConfig,
+  DiscoveredAsset,
+  DiscoveredService,
+  DiscoveredVulnerability,
+  DiscoveredEdge,
+  EdgeType,
+  EdgeEvidence,
+  AssetType,
+  FusionResult,
+  FusedAsset,
+  FusedEdge
+} from './multi-source-fusion-engine'
+
+// ============================================================================
+// FUSED ATTACK ENGINE (Multi-Source + Attack Path)
+// ============================================================================
+
+export { FusedAttackEngine } from './fused-attack-engine'
+export type {
+  FusedAnalysisConfig,
+  FusedAnalysisResult,
+  AttackerProfileConfig,
+  RiskMetrics,
+  AttackVector,
+  Mitigation
+} from './fused-attack-engine'
+
+// ============================================================================
 // ENHANCED ATTACK ENGINE (ALTERNATIVE)
 // ============================================================================
 
@@ -238,7 +289,7 @@ export function createZoneDetector(): ZoneDetector {
 // VERSION INFO
 // ============================================================================
 
-export const VERSION = '2.0.0'
+export const VERSION = '3.0.0'
 export const FEATURES = {
   GNN_EMBEDDINGS: true,
   BAYESIAN_INFERENCE: true,
@@ -246,5 +297,11 @@ export const FEATURES = {
   LLM_VALIDATION: true,
   SCALABLE_ARCHITECTURE: true,
   ZONE_DETECTION: true,
-  FP_REDUCTION: true
+  FP_REDUCTION: true,
+  MULTI_SOURCE_FUSION: true,
+  API_DISCOVERY: true,
+  PASSIVE_NETFLOW: true,
+  ACTIVE_SCAN: true,
+  SIDESCAN: true,
+  DEMPSTER_SHAFER_FUSION: true
 }
