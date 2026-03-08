@@ -103,6 +103,7 @@ interface AnalysisResult {
     pattern_edges: number
     llm_edges: number
     total_edges: number
+    candidates_evaluated?: number
   }
   entry_points: Array<{
     node_id: string
