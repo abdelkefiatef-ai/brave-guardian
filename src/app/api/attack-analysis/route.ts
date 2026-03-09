@@ -365,33 +365,114 @@ const ATTACK_PATTERNS: Record<string, {
   }
 }
 
-// Zone reachability - Simplified to allow paths to form
-// LLM will judge if zone transitions are realistic
+// ============================================================================
+// IMPROVEMENT: Technique-Vulnerability Mapping
+// Maps specific misconfigurations to appropriate MITRE ATT&CK techniques
+// ============================================================================
+const VULN_TO_TECHNIQUE: Record<string, { techniques: string[]; description: string }> = {
+  // Network vulnerabilities
+  'M001': { techniques: ['T1021.001', 'T1078'], description: 'RDP exploitation and valid accounts' },
+  'M002': { techniques: ['T1210', 'T1021.002'], description: 'SMB exploitation (EternalBlue-style)' },
+  'M003': { techniques: ['T1557.001', 'T1185'], description: 'SMB relay attacks' },
+  'M004': { techniques: ['T1021.006', 'T1078'], description: 'WinRM remote execution' },
+  'M005': { techniques: ['T1185', 'T1557'], description: 'LDAP interception and relay' },
+  
+  // Authentication vulnerabilities
+  'M010': { techniques: ['T1110.001', 'T1110.002'], description: 'Password guessing and spraying' },
+  'M011': { techniques: ['T1110.003', 'T1552.001'], description: 'Password cracking and credential dumping' },
+  'M012': { techniques: ['T1558.004'], description: 'AS-REP Roasting' },
+  'M013': { techniques: ['T1078.002', 'T1021'], description: 'Pass-the-hash lateral movement' },
+  
+  // Authorization vulnerabilities
+  'M020': { techniques: ['T1078.002', 'T1548'], description: 'Abuse of excessive user privileges' },
+  'M022': { techniques: ['T1003.006', 'T1558'], description: 'DCSync credential harvesting' },
+  'M023': { techniques: ['T1558.001', 'T1550.003'], description: 'Kerberos delegation abuse' },
+  
+  // Service vulnerabilities
+  'M030': { techniques: ['T1562.001', 'T1059'], description: 'AV bypass and code execution' },
+  'M031': { techniques: ['T1543.003', 'T1574.009'], description: 'Service path hijacking' },
+  
+  // Encryption vulnerabilities
+  'M040': { techniques: ['T1552.001', 'T1005'], description: 'Data theft from unencrypted storage' },
+  
+  // Logging vulnerabilities
+  'M050': { techniques: ['T1562.002', 'T1070'], description: 'Disable logging and clear evidence' },
+}
+
+// ============================================================================
+// IMPROVEMENT: Realistic Zone Topology
+// Models enterprise network segmentation with proper access patterns
+// ============================================================================
+// Attack progression typically follows:
+// DMZ → Web Tier → App Tier → Data Tier → Restricted/Secure zones
+// Corp network has internal access, but doesn't bypass DMZ for external
 const ZONE_REACH: Record<string, string[]> = {
-  // All zones can reach all other zones
-  // This allows pathfinding to work - LLM judges realism
-  'dmz': ['dmz', 'prod-web', 'prod-app', 'prod-db', 'corp', 'restricted', 'cloud-prod', 'cloud-dev', 'mgmt', 'security', 'dev-web', 'dev-app', 'dev-db', 'staging', 'pci', 'hipaa', 'dr', 'corp-wifi', 'internal', 'airgap'],
+  // DMZ - Perimeter network, limited internal access
+  'dmz': ['dmz', 'prod-web', 'corp'],  // DMZ can reach web tier and corp (for VPN/email)
+  
+  // External - only reaches DMZ
   'internet': ['dmz'],
-  'prod-web': ['prod-web', 'prod-app', 'prod-db', 'dmz', 'corp', 'restricted'],
-  'prod-app': ['prod-app', 'prod-db', 'prod-web', 'restricted', 'corp'],
+  
+  // Production Web Tier - receives from DMZ, reaches app tier
+  'prod-web': ['prod-web', 'prod-app', 'dmz'],
+  
+  // Production App Tier - business logic, reaches databases
+  'prod-app': ['prod-app', 'prod-db', 'prod-web', 'corp', 'restricted'],
+  
+  // Production Database Tier - most restricted, contains crown jewels
   'prod-db': ['prod-db', 'prod-app', 'restricted'],
-  'dev-web': ['dev-web', 'dev-app', 'dev-db', 'corp', 'staging'],
+  
+  // Development environments - isolated from production
+  'dev-web': ['dev-web', 'dev-app', 'corp', 'staging'],
   'dev-app': ['dev-app', 'dev-db', 'dev-web', 'corp'],
   'dev-db': ['dev-db', 'dev-app'],
+  
+  // Staging - bridge between dev and prod
   'staging': ['staging', 'prod-web', 'dev-web', 'dev-app'],
-  'corp': ['corp', 'corp-wifi', 'prod-web', 'prod-app', 'dev-web', 'dev-app', 'mgmt'],
+  
+  // Corporate network - user workstations, internal services
+  'corp': ['corp', 'corp-wifi', 'prod-web', 'prod-app', 'dev-web', 'dev-app', 'mgmt', 'dmz'],
+  
+  // Corporate WiFi - limited access
   'corp-wifi': ['corp-wifi', 'corp'],
+  
+  // Restricted zone - contains DCs, identity servers, backup servers
   'restricted': ['restricted', 'prod-db', 'prod-app', 'pci', 'hipaa', 'mgmt', 'security'],
+  
+  // Compliance zones - highly restricted
   'pci': ['pci', 'restricted'],
   'hipaa': ['hipaa', 'restricted'],
+  
+  // Management zone - administrative access
   'mgmt': ['mgmt', 'security', 'corp', 'restricted'],
+  
+  // Security zone - SIEM, PAM, security tools
   'security': ['security', 'mgmt', 'restricted'],
+  
+  // Cloud environments
   'cloud-prod': ['cloud-prod', 'prod-web', 'prod-app', 'cloud-dev'],
   'cloud-dev': ['cloud-dev', 'dev-web', 'dev-app', 'cloud-prod'],
+  
+  // Disaster recovery
   'dr': ['dr', 'restricted', 'prod-db'],
+  
+  // Internal - general internal network
   'internal': ['internal', 'restricted', 'dmz', 'prod-web', 'prod-app', 'prod-db', 'corp'],
+  
+  // Air-gapped network - extremely restricted
   'airgap': ['airgap', 'restricted']
 }
+
+// Critical target types that must be represented in attack paths
+const CRITICAL_TARGET_TYPES = [
+  'domain_controller',
+  'identity_server', 
+  'database_server',
+  'backup_server',
+  'pci_server',
+  'hipaa_server',
+  'pki_server'
+]
 
 // ============================================================================
 // ASSET CRITICALITY TIERS - Defines Attack Progression Hierarchy
@@ -1082,12 +1163,24 @@ function calculatePageRank(nodes: AttackNode[], edges: AttackEdge[]): Map<string
 // PHASE 4: PATH DISCOVERY (SCALABLE - Limited entry/target pairs)
 // ============================================================================
 
+// Result type for path finding with metadata
+interface PathFindingResult {
+  paths: Array<{ nodes: AttackNode[]; edges: AttackEdge[]; probability: number }>
+  warnings: string[]
+  entryStats: {
+    dmzEntries: number
+    internalExposedEntries: number
+    totalEntries: number
+  }
+  targetStats: Map<string, number>
+}
+
 function findPaths(
   nodes: AttackNode[],
   edges: AttackEdge[],
   pageRank: Map<string, number>,
   maxPaths: number
-): Array<{ nodes: AttackNode[]; edges: AttackEdge[]; probability: number }> {
+): { paths: Array<{ nodes: AttackNode[]; edges: AttackEdge[]; probability: number }>; warnings: string[] } {
   const nodeMap = new Map(nodes.map(n => [n.id, n]))
   const adjList = new Map<string, AttackEdge[]>()
   nodes.forEach(n => adjList.set(n.id, []))
@@ -1096,136 +1189,267 @@ function findPaths(
     if (list) list.push(e)
   })
 
-  // Find entry points (internet-facing nodes with outgoing edges)
-  const internetFacing = nodes.filter(n => n.internet_facing)
+  const warnings: string[] = []
+  
+  // ============================================================================
+  // IMPROVEMENT 1: Entry Point Prioritization
+  // DMZ entries are proper attack surface, internal exposed is misconfiguration
+  // ============================================================================
+  
   const nodesWithEdges = nodes.filter(n => (adjList.get(n.id)?.length || 0) > 0)
   
-  const allEntries = nodes.filter(n => 
+  // DMZ entries - proper internet-facing attack surface
+  const dmzEntries = nodes.filter(n => 
     n.internet_facing && 
+    n.asset_zone === 'dmz' &&
     (adjList.get(n.id)?.length || 0) > 0 &&
     !isTerminalAsset(n.asset_type)
-  )
+  ).sort((a, b) => (pageRank.get(b.id) || 0) - (pageRank.get(a.id) || 0))
   
-  // FALLBACK: If no internet-facing entries, use nodes with outgoing edges
-  let entries = allEntries.length > 0 
-    ? allEntries.sort((a, b) => (pageRank.get(b.id) || 0) - (pageRank.get(a.id) || 0)).slice(0, 50)
-    : nodesWithEdges.filter(n => !isTerminalAsset(n.asset_type)).slice(0, 50)
+  // Internal exposed - SECURITY ISSUE! These shouldn't be internet-facing
+  const internalExposedEntries = nodes.filter(n => 
+    n.internet_facing && 
+    n.asset_zone !== 'dmz' &&
+    (adjList.get(n.id)?.length || 0) > 0 &&
+    !isTerminalAsset(n.asset_type)
+  ).sort((a, b) => (pageRank.get(b.id) || 0) - (pageRank.get(a.id) || 0))
   
-  // Find targets - PRIORITIZE terminal assets (DC, identity servers) first
-  let terminalTargets = nodes.filter(n => 
-    isTerminalAsset(n.asset_type) && n.criticality >= 4
-  )
-  
-  // Then add other critical assets
-  let otherCriticalTargets = nodes.filter(n => 
-    n.criticality >= 4 && !isTerminalAsset(n.asset_type)
-  )
-  
-  // FALLBACK: If no critical targets, use high-tier assets
-  if (terminalTargets.length === 0 && otherCriticalTargets.length === 0) {
-    terminalTargets = nodes.filter(n => isTerminalAsset(n.asset_type))
-    otherCriticalTargets = nodes.filter(n => getAssetTier(n.asset_type) >= 3 && !isTerminalAsset(n.asset_type))
+  // Generate warnings for internal exposure
+  if (internalExposedEntries.length > 0) {
+    const internalZones = [...new Set(internalExposedEntries.map(n => n.asset_zone))]
+    warnings.push(`⚠️ CRITICAL: ${internalExposedEntries.length} internal assets exposed to internet in zones: ${internalZones.join(', ')}`)
+    warnings.push(`These assets bypass DMZ security controls - immediate remediation required!`)
+    
+    // Log each exposed asset
+    internalExposedEntries.slice(0, 5).forEach(n => {
+      warnings.push(`  - ${n.asset_name} (${n.asset_type}, ${n.asset_zone})`)
+    })
+    if (internalExposedEntries.length > 5) {
+      warnings.push(`  ... and ${internalExposedEntries.length - 5} more`)
+    }
   }
   
-  // Combine: terminal assets first, then other critical
-  const targets = [...terminalTargets, ...otherCriticalTargets]
-    .sort((a, b) => {
-      const aTerminal = isTerminalAsset(a.asset_type) ? 0 : 1
-      const bTerminal = isTerminalAsset(b.asset_type) ? 0 : 1
-      if (aTerminal !== bTerminal) return aTerminal - bTerminal
+  // Prioritize DMZ entries first, then internal (attackers exploit both, but DMZ is expected path)
+  // Limit internal exposed to prevent them from dominating
+  const maxInternalExposed = Math.max(2, Math.floor(maxPaths * 0.3)) // Max 30% from internal
+  const entries = [
+    ...dmzEntries.slice(0, 30),  // Up to 30 DMZ entries
+    ...internalExposedEntries.slice(0, maxInternalExposed)  // Limited internal
+  ]
+  
+  // FALLBACK: If no internet-facing entries at all, use nodes with edges
+  if (entries.length === 0) {
+    entries.push(...nodesWithEdges.filter(n => !isTerminalAsset(n.asset_type)).slice(0, 50))
+    warnings.push(`No internet-facing assets found - using fallback entries`)
+  }
+  
+  console.log(`[PATH FINDING] DMZ entries: ${dmzEntries.length}, Internal exposed: ${internalExposedEntries.length}, Total: ${entries.length}`)
+  
+  // ============================================================================
+  // IMPROVEMENT 2: Target Type Guarantees
+  // Ensure each critical target type has representation in results
+  // ============================================================================
+  
+  // Find targets - organized by type for guaranteed representation
+  const targetsByType = new Map<string, AttackNode[]>()
+  
+  // Group all potential targets by type
+  nodes.filter(n => n.criticality >= 4 || isTerminalAsset(n.asset_type))
+    .forEach(n => {
+      const type = n.asset_type
+      if (!targetsByType.has(type)) targetsByType.set(type, [])
+      targetsByType.get(type)!.push(n)
+    })
+  
+  // Sort each type by criticality and pageRank
+  for (const [type, typeNodes] of targetsByType) {
+    typeNodes.sort((a, b) => {
       const critDiff = b.criticality - a.criticality
       if (critDiff !== 0) return critDiff
       return (pageRank.get(b.id) || 0) - (pageRank.get(a.id) || 0)
     })
-    .slice(0, 30)
-
-  console.log(`[PATH FINDING] Entries: ${entries.length}, Targets: ${targets.length}`)
+  }
+  
+  // Build target list with type diversity
+  const targets: AttackNode[] = []
+  const targetSelectionTypeCount = new Map<string, number>()
+  const maxPerType = 4  // Max targets of same type
+  
+  // First pass: add top target from each critical type
+  for (const criticalType of CRITICAL_TARGET_TYPES) {
+    const typeTargets = targetsByType.get(criticalType) || []
+    if (typeTargets.length > 0) {
+      targets.push(typeTargets[0])
+      targetSelectionTypeCount.set(criticalType, 1)
+    }
+  }
+  
+  // Second pass: fill remaining slots with highest criticality
+  const remainingTargets = nodes
+    .filter(n => 
+      (n.criticality >= 4 || isTerminalAsset(n.asset_type)) && 
+      !targets.includes(n)
+    )
+    .sort((a, b) => {
+      const critDiff = b.criticality - a.criticality
+      if (critDiff !== 0) return critDiff
+      return (pageRank.get(b.id) || 0) - (pageRank.get(a.id) || 0)
+    })
+  
+  for (const target of remainingTargets) {
+    if (targets.length >= 30) break
+    
+    const currentCount = targetSelectionTypeCount.get(target.asset_type) || 0
+    if (currentCount < maxPerType) {
+      targets.push(target)
+      targetSelectionTypeCount.set(target.asset_type, currentCount + 1)
+    }
+  }
+  
+  console.log(`[PATH FINDING] Targets: ${targets.length}, Types: ${targets.map(t => t.asset_type)}`)
 
   const paths: Array<{ nodes: AttackNode[]; edges: AttackEdge[]; probability: number }> = []
   
+  // Only track exact path sequences - allow sharing of entry/intermediate nodes
   const usedAssetSequences = new Set<string>()
-  const usedEntryAssets = new Set<string>()
-  const usedAssetPairs = new Set<string>()
 
   for (const entry of entries) {
-    if (usedEntryAssets.has(entry.asset_id)) continue
-    
     for (const target of targets) {
       if (entry.id === target.id) continue
       if (entry.asset_id === target.asset_id) continue
-      
-      const assetPairKey = `${entry.asset_id}→${target.asset_id}`
-      if (usedAssetPairs.has(assetPairKey)) continue
 
-      const result = dijkstra(nodeMap, adjList, entry.id, target.id)
+      // Get multiple intermediate paths for variety
+      const resultOrResults = dijkstra(nodeMap, adjList, entry.id, target.id, 3, true)
       
-      // REQUIRE AT LEAST 3 NODES for realistic attack paths (entry → intermediate → target)
-      if (result && result.nodes.length >= 3 && result.nodes.length <= 6) {
-        // VALIDATE: Check tier progression is logical
-        let hasTierViolation = false
-        for (let i = 0; i < result.nodes.length - 1; i++) {
-          const sourceTier = getAssetTier(result.nodes[i].asset_type)
-          const targetTier = getAssetTier(result.nodes[i + 1].asset_type)
-          if (sourceTier > targetTier) {
-            hasTierViolation = true
-            break
+      // Handle both single and multiple results
+      const results = Array.isArray(resultOrResults) 
+        ? resultOrResults 
+        : resultOrResults ? [resultOrResults] : []
+      
+      for (const result of results) {
+        // REQUIRE AT LEAST 3 NODES for realistic attack paths (entry → intermediate → target)
+        if (result && result.nodes.length >= 3 && result.nodes.length <= 6) {
+          // VALIDATE: Check tier progression is logical
+          let hasTierViolation = false
+          for (let i = 0; i < result.nodes.length - 1; i++) {
+            const sourceTier = getAssetTier(result.nodes[i].asset_type)
+            const targetTier = getAssetTier(result.nodes[i + 1].asset_type)
+            if (sourceTier > targetTier) {
+              hasTierViolation = true
+              break
+            }
           }
-        }
-        
-        if (hasTierViolation) continue
-        
-        // Create ASSET sequence key
-        const assetSequence = result.nodes.map(n => n.asset_id).join('→')
-        
-        // Check for overlapping assets with existing paths
-        let hasOverlap = false
-        for (const existingPath of paths) {
-          const existingAssets = new Set(existingPath.nodes.map(n => n.asset_id))
-          const newAssets = new Set(result.nodes.map(n => n.asset_id))
           
-          const intermediateExisting = [...existingAssets].slice(0, -1)
-          const intermediateNew = [...newAssets].slice(0, -1)
+          if (hasTierViolation) continue
           
-          const intermediateOverlap = intermediateExisting.some(a => intermediateNew.includes(a))
-          if (intermediateOverlap) {
-            hasOverlap = true
-            break
+          // Create ASSET sequence key (exact path signature)
+          const assetSequence = result.nodes.map(n => n.asset_id).join('→')
+          
+          // Only block exact duplicate paths - allow different paths even if they share nodes
+          if (!usedAssetSequences.has(assetSequence)) {
+            usedAssetSequences.add(assetSequence)
+            paths.push(result)
           }
-        }
-        
-        if (!hasOverlap && !usedAssetSequences.has(assetSequence)) {
-          usedAssetSequences.add(assetSequence)
-          usedEntryAssets.add(entry.asset_id)
-          usedAssetPairs.add(assetPairKey)
-          paths.push(result)
         }
       }
 
-      if (paths.length >= maxPaths * 2) break
+      if (paths.length >= maxPaths * 3) break
     }
-    if (paths.length >= maxPaths * 2) break
+    if (paths.length >= maxPaths * 3) break
   }
 
   paths.sort((a, b) => b.probability - a.probability)
   
-  // Final deduplication pass
-  const finalPaths: Array<{ nodes: AttackNode[]; edges: AttackEdge[]; probability: number }> = []
-  const allUsedAssets = new Set<string>()
+  // ========================================================================
+  // DYNAMIC LIMIT CALCULATION - Data-driven, not hard-coded
+  // ========================================================================
+  // Analyze the candidate paths to determine optimal distribution limits
   
+  const uniqueEntries = new Set(paths.map(p => p.nodes[0].asset_id))
+  const uniqueTargets = new Set(paths.map(p => p.nodes[p.nodes.length - 1].asset_id))
+  const uniqueTargetTypes = new Set(paths.map(p => p.nodes[p.nodes.length - 1].asset_type))
+  
+  const numEntries = uniqueEntries.size
+  const numTargets = uniqueTargets.size
+  const numTargetTypes = uniqueTargetTypes.size
+  
+  // Calculate limits proportional to data distribution
+  // Goal: Ensure each entry/target/type gets fair representation
+  const maxPerEntry = Math.max(1, Math.ceil(maxPaths / Math.max(1, numEntries)))
+  const maxPerTarget = Math.max(1, Math.ceil(maxPaths / Math.max(1, numTargets)))
+  const maxPerTargetType = Math.max(2, Math.ceil(maxPaths / Math.max(1, numTargetTypes)))
+  
+  // Reserve some paths for underrepresented types
+  // At least 1 path per target type should be included
+  const minPerTargetType = 1
+  
+  // Maximum paths to return
+  const maxPathsLimit = maxPaths
+  
+  console.log(`[PATH FINDING] Dynamic limits: ${numEntries} entries, ${numTargets} targets, ${numTargetTypes} types`)
+  console.log(`[PATH FINDING] Max per: entry=${maxPerEntry}, target=${maxPerTarget}, type=${maxPerTargetType}`)
+  
+  // Balanced deduplication: ensure variety of entries AND targets
+  // Use round-robin selection to give each entry a fair chance
+  const finalPaths: Array<{ nodes: AttackNode[]; edges: AttackEdge[]; probability: number }> = []
+  const targetCount = new Map<string, number>()
+  const targetTypeCount = new Map<string, number>() // domain_controller, database_server, etc.
+  const entryCount = new Map<string, number>()
+  
+  // Group paths by entry for round-robin selection
+  const pathsByEntry = new Map<string, typeof paths>()
   for (const path of paths) {
-    const pathAssets = path.nodes.map(n => n.asset_id)
-    const hasConflict = pathAssets.slice(0, -1).some(assetId => allUsedAssets.has(assetId))
-    
-    if (!hasConflict) {
-      pathAssets.forEach(assetId => allUsedAssets.add(assetId))
-      finalPaths.push(path)
+    const entry = path.nodes[0].asset_id
+    if (!pathsByEntry.has(entry)) pathsByEntry.set(entry, [])
+    pathsByEntry.get(entry)!.push(path)
+  }
+  
+  // Round-robin: take best path from each entry in turn
+  const entryKeys = [...pathsByEntry.keys()]
+  let addedAny = true
+  
+  while (addedAny && finalPaths.length < maxPaths) {
+    addedAny = false
+    for (const entry of entryKeys) {
+      if (finalPaths.length >= maxPaths) break
+      
+      const entryPaths = pathsByEntry.get(entry)!
+      const entryUses = entryCount.get(entry) || 0
+      
+      // Use data-driven limit for entries
+      if (entryUses >= maxPerEntry) continue
+      
+      // Find next path for this entry that passes limits
+      for (let i = 0; i < entryPaths.length; i++) {
+        const path = entryPaths[i]
+        if (!path) continue
+        
+        const targetAsset = path.nodes[path.nodes.length - 1].asset_id
+        const targetType = path.nodes[path.nodes.length - 1].asset_type
+        
+        const targetUses = targetCount.get(targetAsset) || 0
+        const typeUses = targetTypeCount.get(targetType) || 0
+        
+        // Use data-driven limits for targets and types
+        // Also ensure minimum representation for each type
+        const typeNeedsMinPath = typeUses < minPerTargetType
+        const passesNormalLimits = targetUses < maxPerTarget && typeUses < maxPerTargetType
+        
+        if (typeNeedsMinPath || passesNormalLimits) {
+          targetCount.set(targetAsset, targetUses + 1)
+          targetTypeCount.set(targetType, typeUses + 1)
+          entryCount.set(entry, entryUses + 1)
+          finalPaths.push(path)
+          entryPaths[i] = null as any // Mark as used
+          addedAny = true
+          break
+        }
+      }
     }
-    
-    if (finalPaths.length >= maxPaths) break
   }
 
-  console.log(`[PATH FINDING] Found ${finalPaths.length} unique paths`)
-  return finalPaths
+  console.log(`[PATH FINDING] Found ${finalPaths.length} unique paths from ${paths.length} candidates`)
+  return { paths: finalPaths, warnings }
 }
 
 function dijkstra(
@@ -1233,8 +1457,9 @@ function dijkstra(
   adjList: Map<string, AttackEdge[]>,
   source: string,
   target: string,
-  minNodes: number = 3
-): { nodes: AttackNode[]; edges: AttackEdge[]; probability: number } | null {
+  minNodes: number = 3,
+  returnMultiple: boolean = false
+): { nodes: AttackNode[]; edges: AttackEdge[]; probability: number } | null | Array<{ nodes: AttackNode[]; edges: AttackEdge[]; probability: number }> {
   // Build adjacency list for edges
   const edges = adjList.get(source) || []
   
@@ -1275,9 +1500,35 @@ function dijkstra(
         }
       }
       
-      // Return the best intermediate path
+      // Return multiple intermediate paths if requested (for variety)
       if (intermediateCandidates.length > 0) {
         intermediateCandidates.sort((a, b) => b.prob - a.prob)
+        
+        if (returnMultiple) {
+          // Return up to 3 best intermediate paths through DIFFERENT assets
+          const seenIntermediates = new Set<string>()
+          const multiPaths: Array<{ nodes: AttackNode[]; edges: AttackEdge[]; probability: number }> = []
+          
+          for (const cand of intermediateCandidates) {
+            const intAsset = cand.intermediate.split('::')[0]
+            if (!seenIntermediates.has(intAsset)) {
+              seenIntermediates.add(intAsset)
+              multiPaths.push({
+                nodes: [
+                  nodeMap.get(source)!,
+                  nodeMap.get(cand.intermediate)!,
+                  nodeMap.get(target)!
+                ].filter(Boolean),
+                edges: [cand.edge1, cand.edge2],
+                probability: cand.prob
+              })
+              if (multiPaths.length >= 3) break
+            }
+          }
+          return multiPaths
+        }
+        
+        // Return single best path
         const best = intermediateCandidates[0]
         
         return {
@@ -1655,10 +1906,15 @@ async function runAnalysis(assets: Asset[]): Promise<{
 
     // Phase 4: Path discovery (instant)
     t = Date.now()
-    const rawPaths = findPaths(nodes, edges, pageRank, 20)
+    const pathResult = findPaths(nodes, edges, pageRank, 20)
+    const rawPaths = pathResult.paths
+    const pathWarnings = pathResult.warnings
     const pathDebug = (rawPaths as any)._debug
     timing.paths = Date.now() - t
     console.log(`[ANALYSIS] Phase 4: Found ${rawPaths.length} paths in ${timing.paths}ms`)
+    if (pathWarnings.length > 0) {
+      console.log(`[ANALYSIS] Path warnings:`, pathWarnings)
+    }
     console.log(`[ANALYSIS] Path debug:`, JSON.stringify(pathDebug))
     
     // Debug: log raw paths

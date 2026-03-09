@@ -399,10 +399,21 @@ const generateEnterpriseAssets = (): Asset[] => {
         const zonePrefix = NETWORK_ZONES[zone].name.toUpperCase().replace(/[^A-Z]/g, '').substring(0, 2)
         const name = `${template.namePrefix}-${zonePrefix}${String(zoneCounters[zoneKey]).padStart(3, '0')}${envSuffix}`
         
-        // Determine if internet-facing
-        const internetFacing = template.internetFacing || 
-          (zone === 'dmz' && rng.next() > 0.7) ||
-          (zone.includes('web') && rng.next() > 0.8)
+        // ============================================================================
+        // IMPROVEMENT: Zone-aware internet-facing determination
+        // Only DMZ and specific perimeter zones should have internet-facing assets
+        // ============================================================================
+        const PERIMETER_ZONES = ['dmz']  // Zones that can have internet-facing assets
+        
+        // An asset is internet-facing ONLY if:
+        // 1. It's in a perimeter zone (DMZ) AND
+        // 2. The template allows it OR zone randomly allows it
+        const isInPerimeter = PERIMETER_ZONES.includes(zone)
+        const templateAllowsInternet = template.internetFacing
+        const zoneAllowsInternet = isInPerimeter && (rng.next() > 0.5)  // 50% of DMZ assets are internet-facing
+        
+        // Final determination: must be in perimeter zone
+        const internetFacing = isInPerimeter && (templateAllowsInternet || zoneAllowsInternet)
         
         // Adjust criticality based on zone
         let criticality = template.criticality
