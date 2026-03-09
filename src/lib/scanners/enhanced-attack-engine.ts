@@ -973,11 +973,16 @@ class MCTSPathDiscoveryEngine {
     while (stack.length > 0) {
       const { node, path } = stack.pop()!
       
-      // Require minimum 3 nodes for realistic attack paths (entry → intermediate → target)
-      if (targetAssets.has(node.asset_id) && path.length >= this.minDepth) {
-        // Found a complete path with sufficient depth
-        const attackPath = this.constructPath(path, assetMap)
-        paths.push(attackPath)
+      // Check if this is a target node
+      if (targetAssets.has(node.asset_id)) {
+        // Determine minimum required path length based on zone transitions
+        const minRequiredLength = this.getMinPathLength(path, assetMap)
+        
+        if (path.length >= minRequiredLength) {
+          // Found a complete path with sufficient depth
+          const attackPath = this.constructPath(path, assetMap)
+          paths.push(attackPath)
+        }
       }
       
       for (const child of node.children) {
@@ -988,6 +993,32 @@ class MCTSPathDiscoveryEngine {
     }
     
     return paths
+  }
+  
+  /**
+   * Calculate minimum path length based on zone transitions:
+   * - If entry/intermediate zones are same, need 4+ nodes
+   * - If intermediate/target zones are same, need 4+ nodes
+   * - Otherwise, 3 nodes minimum (entry → intermediate → target)
+   */
+  private getMinPathLength(path: MCTSNode[], assetMap: Map<string, EnhancedAsset>): number {
+    if (path.length < 3) return 4 // Default to 4 for short paths
+    
+    const zones = path.map(n => {
+      const asset = assetMap.get(n.asset_id)
+      return asset?.zone || 'unknown'
+    })
+    
+    // Check for same-zone transitions
+    for (let i = 0; i < zones.length - 1; i++) {
+      // If consecutive nodes are in the same zone, need longer path
+      if (zones[i] === zones[i + 1]) {
+        return 4
+      }
+    }
+    
+    // All zones are different, 3 nodes is sufficient
+    return this.minDepth
   }
 
   private constructPath(nodes: MCTSNode[], assetMap: Map<string, EnhancedAsset>): RealisticAttackPath {
