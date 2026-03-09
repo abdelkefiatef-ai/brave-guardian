@@ -802,6 +802,13 @@ class MCTSPathDiscoveryEngine {
   ): MCTSNode {
     if (node.depth >= this.maxDepth) return node
     
+    // TERMINAL ASSET RULE: Once we reach a crown jewel (DC, identity_server, etc.),
+    // the attack is complete - no further expansion needed
+    const currentAsset = assetMap.get(node.asset_id)
+    if (currentAsset && this.isTerminalAsset(currentAsset.type)) {
+      return node // Stop expansion - this is a crown jewel
+    }
+    
     const neighbors = adjacencyList.get(node.asset_id) || []
     
     for (const neighborId of neighbors) {
@@ -844,6 +851,15 @@ class MCTSPathDiscoveryEngine {
     }
     return node
   }
+  
+  private isTerminalAsset(assetType: string): boolean {
+    const terminalTypes = [
+      'domain_controller', 'active_directory', 'identity_server', 
+      'pki_server', 'certificate_authority', 'bastion_host', 
+      'pci_server', 'hipaa_server'
+    ]
+    return terminalTypes.includes(assetType.toLowerCase())
+  }
 
   private async simulate(
     node: MCTSNode,
@@ -859,6 +875,15 @@ class MCTSPathDiscoveryEngine {
     
     // Random rollout
     while (depth < this.maxDepth && cumulativeProbability > 0.01) {
+      const currentAsset = assetMap.get(current)
+      
+      // CROWN JEWEL RULE: Stop at terminal assets (DC, identity_server, etc.)
+      // Once we compromise the crown jewels, the attack is complete
+      if (currentAsset && this.isTerminalAsset(currentAsset.type)) {
+        reward = this.computeTerminalReward(node, currentAsset)
+        break
+      }
+      
       // Check if reached target
       if (targetAssets.has(current)) {
         reward = this.computeTerminalReward(node, assetMap.get(current)!)
@@ -973,8 +998,12 @@ class MCTSPathDiscoveryEngine {
     while (stack.length > 0) {
       const { node, path } = stack.pop()!
       
-      // Check if this is a target node
-      if (targetAssets.has(node.asset_id)) {
+      const nodeAsset = assetMap.get(node.asset_id)
+      const isTarget = targetAssets.has(node.asset_id)
+      const isTerminal = nodeAsset && this.isTerminalAsset(nodeAsset.type)
+      
+      // Valid end point: either it's in targetAssets OR it's a crown jewel (DC, identity_server, etc.)
+      if ((isTarget || isTerminal) && path.length >= 3) {
         // Determine minimum required path length based on zone transitions
         const minRequiredLength = this.getMinPathLength(path, assetMap)
         
@@ -983,6 +1012,11 @@ class MCTSPathDiscoveryEngine {
           const attackPath = this.constructPath(path, assetMap)
           paths.push(attackPath)
         }
+      }
+      
+      // Don't expand from terminal assets (crown jewels)
+      if (isTerminal) {
+        continue
       }
       
       for (const child of node.children) {
