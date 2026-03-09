@@ -156,67 +156,327 @@ const MISCONFIG_DB: Misconfiguration[] = [
 ]
 
 // ============================================================================
-// ASSET GENERATION
+// ENTERPRISE ENVIRONMENT GENERATOR - 500 Assets
+// Realistic enterprise network with zones, segmentation, and business units
 // ============================================================================
 
-const generateAssets = (): Asset[] => {
-  const assetTypes = [
-    { type: 'domain_controller', zone: 'restricted', criticality: 5, domain_joined: true, services: ['AD', 'DNS'], data_sensitivity: 'credentials' },
-    { type: 'file_server', zone: 'internal', criticality: 4, domain_joined: true, services: ['SMB'], data_sensitivity: 'user_files' },
-    { type: 'web_server', zone: 'dmz', criticality: 4, domain_joined: false, services: ['IIS'], data_sensitivity: 'app_data' },
-    { type: 'database_server', zone: 'restricted', criticality: 5, domain_joined: true, services: ['SQL'], data_sensitivity: 'pii' },
-    { type: 'app_server', zone: 'internal', criticality: 3, domain_joined: true, services: ['App'], data_sensitivity: 'business_logic' },
-    { type: 'workstation', zone: 'internal', criticality: 2, domain_joined: true, services: ['Office'], data_sensitivity: 'user_data' },
-    { type: 'jump_server', zone: 'dmz', criticality: 4, domain_joined: true, services: ['RDP'], data_sensitivity: 'credentials' },
-    { type: 'email_server', zone: 'internal', criticality: 4, domain_joined: true, services: ['Exchange'], data_sensitivity: 'emails' },
-    { type: 'backup_server', zone: 'restricted', criticality: 5, domain_joined: true, services: ['Backup'], data_sensitivity: 'backups' },
-  ]
+// Network Zones - Represents enterprise network segmentation
+const NETWORK_ZONES = {
+  // Perimeter
+  'dmz': { name: 'DMZ', color: 'red', description: 'Demilitarized Zone - Internet-facing', subnet: '10.0' },
+  'internet': { name: 'Internet', color: 'darkred', description: 'External network', subnet: '0.0.0.0' },
+  
+  // Production
+  'prod-web': { name: 'Prod Web', color: 'orange', description: 'Production Web Tier', subnet: '10.10' },
+  'prod-app': { name: 'Prod App', color: 'yellow', description: 'Production Application Tier', subnet: '10.11' },
+  'prod-db': { name: 'Prod DB', color: 'red', description: 'Production Database Tier', subnet: '10.12' },
+  
+  // Development
+  'dev-web': { name: 'Dev Web', color: 'blue', description: 'Development Web Tier', subnet: '10.20' },
+  'dev-app': { name: 'Dev App', color: 'cyan', description: 'Development Application Tier', subnet: '10.21' },
+  'dev-db': { name: 'Dev DB', color: 'purple', description: 'Development Database Tier', subnet: '10.22' },
+  
+  // Staging/QA
+  'staging': { name: 'Staging', color: 'teal', description: 'Staging/QA Environment', subnet: '10.30' },
+  
+  // Internal Corporate
+  'corp': { name: 'Corporate', color: 'green', description: 'Corporate Network', subnet: '10.100' },
+  'corp-wifi': { name: 'Corp WiFi', color: 'lightgreen', description: 'Corporate Wireless', subnet: '10.101' },
+  
+  // Restricted/High-Security
+  'restricted': { name: 'Restricted', color: 'darkred', description: 'High-Security Zone', subnet: '10.200' },
+  'pci': { name: 'PCI-DSS', color: 'maroon', description: 'Payment Card Industry', subnet: '10.201' },
+  'hipaa': { name: 'HIPAA', color: 'crimson', description: 'Healthcare Data', subnet: '10.202' },
+  
+  // Infrastructure
+  'mgmt': { name: 'Management', color: 'gray', description: 'Network Management', subnet: '10.250' },
+  'security': { name: 'Security', color: 'slate', description: 'Security Tools', subnet: '10.251' },
+  
+  // Cloud
+  'cloud-prod': { name: 'Cloud Prod', color: 'skyblue', description: 'Cloud Production', subnet: '172.16' },
+  'cloud-dev': { name: 'Cloud Dev', color: 'lightblue', description: 'Cloud Development', subnet: '172.17' },
+  
+  // Disaster Recovery
+  'dr': { name: 'DR Site', color: 'brown', description: 'Disaster Recovery', subnet: '10.180' },
+} as const
 
-  const businessUnits = ['Finance', 'Engineering', 'Operations', 'HR', 'IT', 'Sales']
-  let seed = 12345
-  const random = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff }
+type NetworkZone = keyof typeof NETWORK_ZONES
 
-  const assets: Asset[] = []
-  for (let i = 0; i < 50; i++) {
-    const template = assetTypes[Math.floor(random() * assetTypes.length)]
-    const internetFacing = template.zone === 'dmz' || (template.zone === 'internal' && random() > 0.92)
+// Business Units
+const BUSINESS_UNITS = [
+  { name: 'Finance', revenue: 50000000, criticality: 5 },
+  { name: 'Engineering', revenue: 30000000, criticality: 4 },
+  { name: 'Sales', revenue: 40000000, criticality: 4 },
+  { name: 'HR', revenue: 5000000, criticality: 3 },
+  { name: 'Operations', revenue: 20000000, criticality: 4 },
+  { name: 'Legal', revenue: 8000000, criticality: 4 },
+  { name: 'Marketing', revenue: 15000000, criticality: 3 },
+  { name: 'IT', revenue: 10000000, criticality: 5 },
+  { name: 'R&D', revenue: 25000000, criticality: 4 },
+  { name: 'Customer Support', revenue: 12000000, criticality: 3 },
+] as const
 
-    const relevantCats = template.type === 'domain_controller' ? ['authentication', 'authorization', 'network'] :
-      template.type === 'web_server' ? ['network', 'service'] :
-      template.type === 'database_server' ? ['authentication', 'authorization'] :
-      ['authentication', 'service', 'network']
+// Asset Type Definitions
+interface AssetTemplate {
+  type: string
+  namePrefix: string
+  zones: NetworkZone[]
+  criticality: number
+  domainJoined: boolean
+  services: string[]
+  dataSensitivity: string
+  internetFacing: boolean
+  misconfigCategories: string[]
+  count: number // How many to generate
+  envSpecific: boolean // Does it have dev/prod variants
+}
 
-    const relevant = MISCONFIG_DB.filter(m => relevantCats.includes(m.category))
-    const numMisconfigs = Math.floor(random() * 2) + 1
-    const selected: Misconfiguration[] = []
+const ASSET_TEMPLATES: AssetTemplate[] = [
+  // === CORE INFRASTRUCTURE ===
+  { type: 'domain_controller', namePrefix: 'DC', zones: ['restricted', 'corp', 'mgmt'], criticality: 5, domainJoined: true, services: ['AD', 'DNS', 'LDAP'], dataSensitivity: 'credentials', internetFacing: false, misconfigCategories: ['authentication', 'authorization', 'network'], count: 8, envSpecific: false },
+  { type: 'backup_server', namePrefix: 'BKUP', zones: ['restricted', 'dr'], criticality: 5, domainJoined: true, services: ['Veeam', 'Commvault'], dataSensitivity: 'backups', internetFacing: false, misconfigCategories: ['authentication', 'encryption'], count: 6, envSpecific: false },
+  { type: 'dns_server', namePrefix: 'DNS', zones: ['mgmt', 'corp'], criticality: 4, domainJoined: true, services: ['DNS'], dataSensitivity: 'none', internetFacing: false, misconfigCategories: ['network', 'service'], count: 4, envSpecific: false },
+  { type: 'dhcp_server', namePrefix: 'DHCP', zones: ['mgmt', 'corp'], criticality: 3, domainJoined: true, services: ['DHCP'], dataSensitivity: 'none', internetFacing: false, misconfigCategories: ['network', 'authorization'], count: 3, envSpecific: false },
+  
+  // === IDENTITY & SECURITY ===
+  { type: 'identity_server', namePrefix: 'IDP', zones: ['restricted', 'security'], criticality: 5, domainJoined: true, services: ['Okta', 'ADFS', 'SAML'], dataSensitivity: 'credentials', internetFacing: true, misconfigCategories: ['authentication', 'authorization'], count: 4, envSpecific: false },
+  { type: 'pki_server', namePrefix: 'PKI', zones: ['restricted'], criticality: 5, domainJoined: true, services: ['CA', 'OCSP'], dataSensitivity: 'certificates', internetFacing: false, misconfigCategories: ['encryption', 'authentication'], count: 2, envSpecific: false },
+  { type: 'siem', namePrefix: 'SIEM', zones: ['security'], criticality: 5, domainJoined: true, services: ['Splunk', 'QRadar'], dataSensitivity: 'logs', internetFacing: false, misconfigCategories: ['logging', 'network'], count: 2, envSpecific: false },
+  { type: 'pam', namePrefix: 'PAM', zones: ['security', 'restricted'], criticality: 5, domainJoined: true, services: ['CyberArk', 'BeyondTrust'], dataSensitivity: 'credentials', internetFacing: false, misconfigCategories: ['authentication', 'authorization'], count: 3, envSpecific: false },
+  
+  // === PERIMETER / DMZ ===
+  { type: 'firewall', namePrefix: 'FW', zones: ['dmz', 'mgmt'], criticality: 5, domainJoined: false, services: ['Palo Alto', 'Fortinet'], dataSensitivity: 'firewall_rules', internetFacing: true, misconfigCategories: ['network', 'authorization'], count: 6, envSpecific: false },
+  { type: 'load_balancer', namePrefix: 'LB', zones: ['dmz', 'prod-web', 'cloud-prod'], criticality: 4, domainJoined: false, services: ['F5', 'NGINX'], dataSensitivity: 'ssl_certs', internetFacing: true, misconfigCategories: ['network', 'encryption'], count: 8, envSpecific: true },
+  { type: 'reverse_proxy', namePrefix: 'RPX', zones: ['dmz'], criticality: 4, domainJoined: false, services: ['NGINX', 'HAProxy'], dataSensitivity: 'ssl_certs', internetFacing: true, misconfigCategories: ['network', 'encryption'], count: 4, envSpecific: false },
+  { type: 'vpn_gateway', namePrefix: 'VPN', zones: ['dmz', 'corp'], criticality: 4, domainJoined: true, services: ['OpenVPN', 'Cisco ASA'], dataSensitivity: 'credentials', internetFacing: true, misconfigCategories: ['network', 'authentication'], count: 4, envSpecific: false },
+  { type: 'web_application_firewall', namePrefix: 'WAF', zones: ['dmz'], criticality: 4, domainJoined: false, services: ['ModSecurity', 'AWS WAF'], dataSensitivity: 'logs', internetFacing: true, misconfigCategories: ['network', 'logging'], count: 4, envSpecific: false },
+  
+  // === WEB SERVERS ===
+  { type: 'web_server', namePrefix: 'WEB', zones: ['dmz', 'prod-web', 'dev-web', 'staging', 'cloud-prod'], criticality: 4, domainJoined: false, services: ['IIS', 'Apache', 'NGINX'], dataSensitivity: 'app_data', internetFacing: true, misconfigCategories: ['network', 'service', 'encryption'], count: 25, envSpecific: true },
+  
+  // === APPLICATION SERVERS ===
+  { type: 'app_server', namePrefix: 'APP', zones: ['prod-app', 'dev-app', 'staging', 'cloud-prod'], criticality: 4, domainJoined: true, services: ['Tomcat', 'NodeJS', 'Java'], dataSensitivity: 'business_logic', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 30, envSpecific: true },
+  { type: 'api_gateway', namePrefix: 'API', zones: ['dmz', 'prod-web'], criticality: 4, domainJoined: false, services: ['Kong', 'Apigee'], dataSensitivity: 'api_keys', internetFacing: true, misconfigCategories: ['authentication', 'network'], count: 8, envSpecific: false },
+  { type: 'microservice', namePrefix: 'SVC', zones: ['prod-app', 'dev-app', 'cloud-prod', 'cloud-dev'], criticality: 3, domainJoined: false, services: ['Docker', 'K8s'], dataSensitivity: 'app_data', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 40, envSpecific: true },
+  
+  // === DATABASE SERVERS ===
+  { type: 'database_server', namePrefix: 'DB', zones: ['prod-db', 'dev-db', 'restricted', 'cloud-prod'], criticality: 5, domainJoined: true, services: ['SQL Server', 'Oracle', 'PostgreSQL'], dataSensitivity: 'pii', internetFacing: false, misconfigCategories: ['authentication', 'authorization', 'encryption'], count: 20, envSpecific: true },
+  { type: 'nosql_db', namePrefix: 'NOSQL', zones: ['prod-db', 'dev-db', 'cloud-prod'], criticality: 4, domainJoined: false, services: ['MongoDB', 'Redis', 'Elasticsearch'], dataSensitivity: 'pii', internetFacing: false, misconfigCategories: ['authentication', 'network'], count: 15, envSpecific: true },
+  { type: 'data_warehouse', namePrefix: 'DWH', zones: ['restricted', 'cloud-prod'], criticality: 5, domainJoined: true, services: ['Snowflake', 'Redshift', 'Teradata'], dataSensitivity: 'analytics', internetFacing: false, misconfigCategories: ['authentication', 'encryption'], count: 5, envSpecific: false },
+  
+  // === FILE & STORAGE ===
+  { type: 'file_server', namePrefix: 'FS', zones: ['corp', 'prod-app', 'restricted'], criticality: 4, domainJoined: true, services: ['SMB', 'NFS'], dataSensitivity: 'user_files', internetFacing: false, misconfigCategories: ['network', 'authorization'], count: 15, envSpecific: false },
+  { type: 'nas', namePrefix: 'NAS', zones: ['corp', 'restricted', 'dr'], criticality: 4, domainJoined: false, services: ['NFS', 'SMB'], dataSensitivity: 'documents', internetFacing: false, misconfigCategories: ['network', 'encryption'], count: 8, envSpecific: false },
+  { type: 'storage_server', namePrefix: 'STR', zones: ['cloud-prod', 'cloud-dev'], criticality: 4, domainJoined: false, services: ['S3', 'Blob'], dataSensitivity: 'mixed', internetFacing: false, misconfigCategories: ['encryption', 'authorization'], count: 10, envSpecific: true },
+  
+  // === COMMUNICATION ===
+  { type: 'email_server', namePrefix: 'MAIL', zones: ['dmz', 'corp'], criticality: 4, domainJoined: true, services: ['Exchange', 'Postfix'], dataSensitivity: 'emails', internetFacing: true, misconfigCategories: ['network', 'authentication', 'encryption'], count: 6, envSpecific: false },
+  { type: 'voip_server', namePrefix: 'VOIP', zones: ['corp'], criticality: 3, domainJoined: true, services: ['Cisco CUCM', 'Asterisk'], dataSensitivity: 'call_logs', internetFacing: false, misconfigCategories: ['network', 'service'], count: 4, envSpecific: false },
+  { type: 'chat_server', namePrefix: 'CHAT', zones: ['corp', 'cloud-prod'], criticality: 3, domainJoined: true, services: ['Slack', 'Teams', 'Mattermost'], dataSensitivity: 'messages', internetFacing: false, misconfigCategories: ['authentication', 'network'], count: 4, envSpecific: false },
+  
+  // === DEVELOPMENT ===
+  { type: 'build_server', namePrefix: 'BLD', zones: ['dev-app', 'cloud-dev'], criticality: 3, domainJoined: true, services: ['Jenkins', 'GitLab CI'], dataSensitivity: 'source_code', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 8, envSpecific: false },
+  { type: 'code_repo', namePrefix: 'GIT', zones: ['dev-app', 'cloud-dev'], criticality: 4, domainJoined: true, services: ['GitHub Enterprise', 'GitLab'], dataSensitivity: 'source_code', internetFacing: true, misconfigCategories: ['authentication', 'network'], count: 4, envSpecific: false },
+  { type: 'artifact_repo', namePrefix: 'ART', zones: ['dev-app', 'cloud-dev'], criticality: 3, domainJoined: false, services: ['Nexus', 'Artifactory'], dataSensitivity: 'artifacts', internetFacing: false, misconfigCategories: ['authentication', 'network'], count: 4, envSpecific: false },
+  
+  // === MONITORING & MANAGEMENT ===
+  { type: 'monitoring', namePrefix: 'MON', zones: ['mgmt', 'cloud-prod'], criticality: 4, domainJoined: true, services: ['Nagios', 'Zabbix', 'Datadog'], dataSensitivity: 'metrics', internetFacing: false, misconfigCategories: ['network', 'logging'], count: 8, envSpecific: false },
+  { type: 'logging_server', namePrefix: 'LOG', zones: ['mgmt', 'security'], criticality: 4, domainJoined: true, services: ['ELK', 'Splunk'], dataSensitivity: 'logs', internetFacing: false, misconfigCategories: ['logging', 'network'], count: 6, envSpecific: false },
+  { type: 'jump_server', namePrefix: 'JMP', zones: ['dmz', 'mgmt'], criticality: 4, domainJoined: true, services: ['RDP', 'SSH'], dataSensitivity: 'credentials', internetFacing: true, misconfigCategories: ['network', 'authentication'], count: 6, envSpecific: false },
+  
+  // === ENDPOINTS ===
+  { type: 'workstation', namePrefix: 'WS', zones: ['corp', 'corp-wifi', 'dev-web'], criticality: 2, domainJoined: true, services: ['Office', 'Browser'], dataSensitivity: 'user_data', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 80, envSpecific: false },
+  { type: 'laptop', namePrefix: 'LAP', zones: ['corp', 'corp-wifi'], criticality: 2, domainJoined: true, services: ['Office', 'Browser'], dataSensitivity: 'user_data', internetFacing: false, misconfigCategories: ['authentication', 'encryption'], count: 60, envSpecific: false },
+  { type: 'developer_workstation', namePrefix: 'DEVWS', zones: ['dev-web', 'dev-app'], criticality: 3, domainJoined: true, services: ['IDE', 'Docker'], dataSensitivity: 'source_code', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 40, envSpecific: false },
+  
+  // === SPECIAL PURPOSE ===
+  { type: 'iot_device', namePrefix: 'IOT', zones: ['corp', 'mgmt'], criticality: 2, domainJoined: false, services: ['Sensors', 'Camera'], dataSensitivity: 'telemetry', internetFacing: false, misconfigCategories: ['network', 'authentication'], count: 20, envSpecific: false },
+  { type: 'printer', namePrefix: 'PRT', zones: ['corp', 'corp-wifi'], criticality: 1, domainJoined: true, services: ['Print'], dataSensitivity: 'print_jobs', internetFacing: false, misconfigCategories: ['network'], count: 15, envSpecific: false },
+  { type: 'scanner', namePrefix: 'SCN', zones: ['corp'], criticality: 2, domainJoined: true, services: ['Scan'], dataSensitivity: 'scanned_docs', internetFacing: false, misconfigCategories: ['network'], count: 8, envSpecific: false },
+  
+  // === COMPLIANCE-SPECIFIC ===
+  { type: 'pci_server', namePrefix: 'PCI', zones: ['pci'], criticality: 5, domainJoined: true, services: ['Payment', 'CardProc'], dataSensitivity: 'pci_data', internetFacing: false, misconfigCategories: ['encryption', 'authentication', 'logging'], count: 6, envSpecific: false },
+  { type: 'hipaa_server', namePrefix: 'HIPAA', zones: ['hipaa'], criticality: 5, domainJoined: true, services: ['EHR', 'PHI'], dataSensitivity: 'phi', internetFacing: false, misconfigCategories: ['encryption', 'authentication', 'logging'], count: 8, envSpecific: false },
+  
+  // === CLOUD-NATIVE ===
+  { type: 'k8s_cluster', namePrefix: 'K8S', zones: ['cloud-prod', 'cloud-dev'], criticality: 4, domainJoined: false, services: ['Kubernetes'], dataSensitivity: 'workloads', internetFacing: false, misconfigCategories: ['authentication', 'authorization', 'network'], count: 12, envSpecific: true },
+  { type: 'container_registry', namePrefix: 'CR', zones: ['cloud-prod', 'cloud-dev'], criticality: 4, domainJoined: false, services: ['Docker Registry', 'ECR'], dataSensitivity: 'images', internetFacing: false, misconfigCategories: ['authentication', 'network'], count: 4, envSpecific: false },
+]
 
-    for (let j = 0; j < numMisconfigs; j++) {
-      const m = relevant[Math.floor(random() * relevant.length)]
-      if (!selected.find(s => s.id === m.id)) selected.push({ ...m })
-    }
-
-    assets.push({
-      id: `asset-${i + 1}`,
-      name: `${template.type.substring(0, 3).toUpperCase()}-${String(i + 1).padStart(3, '0')}`,
-      type: template.type,
-      ip: `10.${Math.floor(random() * 3) + 1}.${Math.floor(random() * 255)}.${Math.floor(random() * 255)}`,
-      network_zone: template.zone,
-      criticality: template.criticality,
-      internet_facing: internetFacing,
-      business_unit: businessUnits[Math.floor(random() * businessUnits.length)],
-      annual_revenue_exposure: Math.floor(random() * 10000000) + 100000,
-      misconfigurations: selected,
-      domain_joined: template.domain_joined,
-      services: template.services,
-      data_sensitivity: template.data_sensitivity,
-      scanStatus: 'pending',
-    })
+// Seeded random number generator for reproducibility
+class SeededRandom {
+  private seed: number
+  constructor(seed: number) {
+    this.seed = seed
   }
+  next(): number {
+    this.seed = (this.seed * 1103515245 + 12345) & 0x7fffffff
+    return this.seed / 0x7fffffff
+  }
+  nextInt(min: number, max: number): number {
+    return Math.floor(this.next() * (max - min + 1)) + min
+  }
+  pick<T>(arr: readonly T[]): T {
+    return arr[Math.floor(this.next() * arr.length)]
+  }
+  shuffle<T>(arr: T[]): T[] {
+    const result = [...arr]
+    for (let i = result.length - 1; i > 0; i--) {
+      const j = Math.floor(this.next() * (i + 1))
+      ;[result[i], result[j]] = [result[j], result[i]]
+    }
+    return result
+  }
+}
 
+// Generate realistic enterprise environment
+const generateEnterpriseAssets = (): Asset[] => {
+  const assets: Asset[] = []
+  const rng = new SeededRandom(42) // Reproducible results
+  
+  let assetId = 1
+  const zoneCounters: Record<string, number> = {}
+  const usedIPs = new Set<string>()
+  
+  // Generate unique IP
+  const generateIP = (zone: NetworkZone): string => {
+    const subnet = NETWORK_ZONES[zone].subnet
+    let ip: string
+    let attempts = 0
+    do {
+      const octet3 = rng.nextInt(0, 255)
+      const octet4 = rng.nextInt(1, 254)
+      ip = `${subnet}.${octet3}.${octet4}`
+      attempts++
+      if (attempts > 1000) {
+        ip = `${subnet}.${rng.nextInt(0, 255)}.${rng.nextInt(1, 254)}`
+        break
+      }
+    } while (usedIPs.has(ip))
+    usedIPs.add(ip)
+    return ip
+  }
+  
+  // Generate misconfigurations for an asset
+  const generateMisconfigurations = (categories: string[]): Misconfiguration[] => {
+    const count = rng.nextInt(1, 3)
+    const relevant = MISCONFIG_DB.filter(m => categories.includes(m.category))
+    const shuffled = rng.shuffle(relevant)
+    return shuffled.slice(0, count).map(m => ({ ...m }))
+  }
+  
+  // Environment suffix
+  const getEnvSuffix = (zone: NetworkZone): string => {
+    if (zone.startsWith('dev') || zone === 'cloud-dev') return '-D'
+    if (zone.startsWith('staging')) return '-S'
+    if (zone === 'dr') return '-DR'
+    return ''
+  }
+  
+  // Process each asset template
+  for (const template of ASSET_TEMPLATES) {
+    let remaining = template.count
+    
+    // Distribute across zones
+    const zones = rng.shuffle([...template.zones])
+    
+    for (const zone of zones) {
+      if (remaining <= 0) break
+      
+      // Determine how many of this type in this zone
+      const zoneShare = Math.ceil(remaining / zones.length)
+      const countInZone = Math.min(zoneShare, remaining)
+      
+      for (let i = 0; i < countInZone; i++) {
+        // Zone counter for sequential naming
+        const zoneKey = `${template.type}-${zone}`
+        zoneCounters[zoneKey] = (zoneCounters[zoneKey] || 0) + 1
+        
+        const envSuffix = getEnvSuffix(zone)
+        const businessUnit = rng.pick(BUSINESS_UNITS)
+        
+        // Generate asset name
+        const zonePrefix = NETWORK_ZONES[zone].name.toUpperCase().replace(/[^A-Z]/g, '').substring(0, 2)
+        const name = `${template.namePrefix}-${zonePrefix}${String(zoneCounters[zoneKey]).padStart(3, '0')}${envSuffix}`
+        
+        // ============================================================================
+        // IMPROVEMENT: Zone-aware internet-facing determination
+        // Only DMZ and specific perimeter zones should have internet-facing assets
+        // ============================================================================
+        const PERIMETER_ZONES = ['dmz']  // Zones that can have internet-facing assets
+        
+        // An asset is internet-facing ONLY if:
+        // 1. It's in a perimeter zone (DMZ) AND
+        // 2. The template allows it OR zone randomly allows it
+        const isInPerimeter = PERIMETER_ZONES.includes(zone)
+        const templateAllowsInternet = template.internetFacing
+        const zoneAllowsInternet = isInPerimeter && (rng.next() > 0.5)  // 50% of DMZ assets are internet-facing
+        
+        // Final determination: must be in perimeter zone
+        const internetFacing = isInPerimeter && (templateAllowsInternet || zoneAllowsInternet)
+        
+        // Adjust criticality based on zone
+        let criticality = template.criticality
+        if (zone.startsWith('dev')) criticality = Math.max(1, criticality - 1)
+        if (zone === 'pci' || zone === 'hipaa') criticality = 5
+        if (zone === 'dr') criticality = Math.min(5, criticality + 1)
+        
+        assets.push({
+          id: `asset-${assetId++}`,
+          name,
+          type: template.type,
+          ip: generateIP(zone),
+          network_zone: zone,
+          criticality,
+          internet_facing: internetFacing,
+          business_unit: businessUnit.name,
+          annual_revenue_exposure: businessUnit.revenue,
+          misconfigurations: generateMisconfigurations(template.misconfigCategories),
+          domain_joined: template.domainJoined,
+          services: template.services,
+          data_sensitivity: template.dataSensitivity,
+          scanStatus: 'pending',
+        })
+      }
+      
+      remaining -= countInZone
+    }
+  }
+  
+  // Ensure we have exactly 500 assets by adjusting workstation counts
+  const diff = 500 - assets.length
+  if (diff > 0) {
+    // Add more workstations
+    for (let i = 0; i < diff; i++) {
+      const zone = rng.pick(['corp', 'corp-wifi', 'dev-web'] as NetworkZone[])
+      const zoneKey = `workstation-${zone}`
+      zoneCounters[zoneKey] = (zoneCounters[zoneKey] || 0) + 1
+      const businessUnit = rng.pick(BUSINESS_UNITS)
+      
+      assets.push({
+        id: `asset-${assetId++}`,
+        name: `WS-${NETWORK_ZONES[zone].name.toUpperCase().substring(0, 2)}${String(zoneCounters[zoneKey]).padStart(3, '0')}`,
+        type: 'workstation',
+        ip: generateIP(zone),
+        network_zone: zone,
+        criticality: 2,
+        internet_facing: false,
+        business_unit: businessUnit.name,
+        annual_revenue_exposure: businessUnit.revenue,
+        misconfigurations: generateMisconfigurations(['authentication', 'service']),
+        domain_joined: true,
+        services: ['Office', 'Browser'],
+        data_sensitivity: 'user_data',
+        scanStatus: 'pending',
+      })
+    }
+  }
+  
+  console.log(`Generated ${assets.length} enterprise assets across ${Object.keys(NETWORK_ZONES).length} zones`)
   return assets
 }
 
-const INITIAL_ASSETS = generateAssets()
+const INITIAL_ASSETS = generateEnterpriseAssets()
 
 // ============================================================================
 // MAIN COMPONENT
@@ -239,49 +499,127 @@ export default function BraveGuardian() {
   const runAnalysis = useCallback(async () => {
     setLoading(true)
     setResult(null)
-    setStatus('Building attack graph...')
+    setStatus('Initializing attack analysis...')
+
+    // Create AbortController for timeout
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => {
+      controller.abort()
+      setStatus('Request timed out - please try again')
+      setLoading(false)
+    }, 120000) // 2 minute timeout
+
+    // Helper function to make the API request
+    const makeRequest = async (retryCount = 0): Promise<Response | null> => {
+      try {
+        const response = await fetch('/api/attack-analysis', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            environment: {
+              assets: assets.map(a => ({
+                id: a.id,
+                name: a.name,
+                type: a.type,
+                ip: a.ip,
+                zone: a.network_zone,
+                internet_facing: a.internet_facing,
+                criticality: a.criticality,
+                domain_joined: a.domain_joined,
+                services: a.services,
+                data_sensitivity: a.data_sensitivity,
+                misconfigurations: a.misconfigurations.map(m => ({
+                  id: m.id,
+                  title: m.title,
+                  description: m.description,
+                  category: m.category
+                }))
+              }))
+            }
+          }),
+          signal: controller.signal
+        })
+        return response
+      } catch (fetchError) {
+        // Network error or abort
+        if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+          throw fetchError
+        }
+        // Retry on network errors
+        if (retryCount < 2) {
+          console.log(`Network error, retrying... (${retryCount + 1}/2)`)
+          setStatus(`Connection issue, retrying... (${retryCount + 1}/2)`)
+          await new Promise(r => setTimeout(r, 1000))
+          return makeRequest(retryCount + 1)
+        }
+        throw fetchError
+      }
+    }
 
     try {
-      const response = await fetch('/api/attack-analysis', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          environment: {
-            assets: assets.map(a => ({
-              id: a.id,
-              name: a.name,
-              type: a.type,
-              ip: a.ip,
-              zone: a.network_zone,
-              internet_facing: a.internet_facing,
-              criticality: a.criticality,
-              domain_joined: a.domain_joined,
-              services: a.services,
-              data_sensitivity: a.data_sensitivity,
-              misconfigurations: a.misconfigurations.map(m => ({
-                id: m.id,
-                title: m.title,
-                description: m.description,
-                category: m.category
-              }))
-            }))
-          }
-        })
-      })
+      setStatus('Building attack graph...')
+      
+      const response = await makeRequest()
+
+      if (!response) {
+        setStatus('Failed to connect to server - please try again')
+        setLoading(false)
+        return
+      }
+
+      clearTimeout(timeoutId)
 
       if (response.ok) {
         const data = await response.json()
-        setResult(data)
+        
+        // Check if API returned an error in the response body
+        if (data.error) {
+          const errorMsg = data.message || data.error || 'Unknown error from server'
+          setStatus(`Error: ${errorMsg}`)
+          console.error('API returned error:', data)
+          setResult(null)
+        } else if (data.attack_paths && data.attack_paths.length > 0) {
+          setResult(data)
+          setStatus('')
+        } else if (data.key_insights && data.key_insights.length > 0) {
+          // No paths but got insights - show what we have
+          setStatus(data.key_insights[0])
+          setResult(data)
+        } else {
+          setStatus('No attack paths found - check asset configurations')
+          setResult(data)
+        }
       } else {
-        setStatus('Analysis failed')
+        // HTTP error response
+        let errorMsg = `Server error (${response.status})`
+        
+        // Special handling for 502 - server might be warming up
+        if (response.status === 502 || response.status === 503) {
+          errorMsg = 'Server is warming up - please wait a moment and try again'
+        }
+        
+        try {
+          const errorData = await response.json()
+          errorMsg = errorData.message || errorData.error || errorMsg
+          console.error('Server error details:', errorData)
+        } catch {
+          // Couldn't parse error response
+          console.error('Could not parse error response, status:', response.status)
+        }
+        setStatus(`Failed: ${errorMsg}`)
       }
-    } catch (e) {
+    } catch (e: unknown) {
+      clearTimeout(timeoutId)
       console.error(e)
-      setStatus('Error during analysis')
+      
+      if (e instanceof Error && e.name === 'AbortError') {
+        setStatus('Request timed out - server may be warming up, please try again')
+      } else {
+        setStatus(`Error: ${e instanceof Error ? e.message : 'Unknown error'}`)
+      }
     }
 
     setLoading(false)
-    setStatus('')
   }, [assets])
 
   // Scanner
@@ -471,51 +809,176 @@ export default function BraveGuardian() {
         {/* Environment View */}
         {view === 'env' && (
           <div className="space-y-6">
-            <div className="grid grid-cols-5 gap-4">
+            <div className="grid grid-cols-6 gap-4">
               <StatCard label="Total Assets" value={stats.totalAssets} />
               <StatCard label="Misconfigurations" value={stats.totalMisconfigs} />
               <StatCard label="Critical" value={stats.bySeverity.critical} color="red" />
               <StatCard label="High" value={stats.bySeverity.high} color="orange" />
               <StatCard label="Internet-Exposed" value={assets.filter(a => a.internet_facing).length} color="yellow" />
+              <StatCard label="Network Zones" value={new Set(assets.map(a => a.network_zone)).size} color="blue" />
             </div>
 
-            {/* Zone Distribution */}
-            <div className="grid grid-cols-4 gap-4">
-              {['dmz', 'internal', 'restricted'].map(zone => {
-                const zoneAssets = assets.filter(a => a.network_zone === zone)
-                return (
-                  <div key={zone} className={`bg-slate-800 rounded-xl p-4 border ${
-                    zone === 'dmz' ? 'border-red-500/50' :
-                    zone === 'restricted' ? 'border-yellow-500/50' :
-                    'border-slate-700'
-                  }`}>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm text-slate-400 uppercase">{zone} Zone</span>
-                      <span className="text-xs px-2 py-0.5 bg-slate-700 rounded">{zoneAssets.length} assets</span>
-                    </div>
-                    <div className="text-2xl font-bold">
-                      {zoneAssets.reduce((s, a) => s + a.misconfigurations.length, 0)}
-                    </div>
-                    <div className="text-xs text-slate-400">misconfigurations</div>
-                  </div>
-                )
-              })}
-              <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
-                <div className="text-sm text-slate-400 mb-2">By Category</div>
-                <div className="space-y-1">
-                  {Object.entries(stats.byCat).map(([cat, count]) => (
-                    <div key={cat} className="flex justify-between text-xs">
-                      <span className="text-slate-400 capitalize">{cat}</span>
-                      <span className="text-white">{count}</span>
-                    </div>
-                  ))}
+            {/* Zone Distribution - Enterprise View */}
+            <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
+              <div className="text-sm font-semibold text-slate-300 mb-3">Network Zone Distribution (Enterprise)</div>
+              <div className="grid grid-cols-6 gap-2">
+                {/* Perimeter */}
+                <div className="space-y-2">
+                  <div className="text-xs text-red-400 font-medium">Perimeter</div>
+                  {['dmz'].map(zone => {
+                    const zoneAssets = assets.filter(a => a.network_zone === zone)
+                    if (zoneAssets.length === 0) return null
+                    return (
+                      <div key={zone} className="bg-red-900/30 rounded p-2 border border-red-500/30">
+                        <div className="text-xs text-red-300 uppercase">{NETWORK_ZONES[zone]?.name || zone}</div>
+                        <div className="text-lg font-bold">{zoneAssets.length}</div>
+                        <div className="text-xs text-slate-400">{zoneAssets.filter(a => a.internet_facing).length} exposed</div>
+                      </div>
+                    )
+                  })}
                 </div>
+                
+                {/* Production */}
+                <div className="space-y-2">
+                  <div className="text-xs text-orange-400 font-medium">Production</div>
+                  {['prod-web', 'prod-app', 'prod-db'].map(zone => {
+                    const zoneAssets = assets.filter(a => a.network_zone === zone)
+                    if (zoneAssets.length === 0) return null
+                    return (
+                      <div key={zone} className="bg-orange-900/30 rounded p-2 border border-orange-500/30">
+                        <div className="text-xs text-orange-300 uppercase">{NETWORK_ZONES[zone]?.name || zone}</div>
+                        <div className="text-lg font-bold">{zoneAssets.length}</div>
+                        <div className="text-xs text-slate-400">{zoneAssets.filter(a => a.criticality >= 4).length} critical</div>
+                      </div>
+                    )
+                  })}
+                </div>
+                
+                {/* Development */}
+                <div className="space-y-2">
+                  <div className="text-xs text-blue-400 font-medium">Development</div>
+                  {['dev-web', 'dev-app', 'dev-db', 'staging'].map(zone => {
+                    const zoneAssets = assets.filter(a => a.network_zone === zone)
+                    if (zoneAssets.length === 0) return null
+                    return (
+                      <div key={zone} className="bg-blue-900/30 rounded p-2 border border-blue-500/30">
+                        <div className="text-xs text-blue-300 uppercase">{NETWORK_ZONES[zone]?.name || zone}</div>
+                        <div className="text-lg font-bold">{zoneAssets.length}</div>
+                        <div className="text-xs text-slate-400">dev assets</div>
+                      </div>
+                    )
+                  })}
+                </div>
+                
+                {/* Corporate */}
+                <div className="space-y-2">
+                  <div className="text-xs text-green-400 font-medium">Corporate</div>
+                  {['corp', 'corp-wifi'].map(zone => {
+                    const zoneAssets = assets.filter(a => a.network_zone === zone)
+                    if (zoneAssets.length === 0) return null
+                    return (
+                      <div key={zone} className="bg-green-900/30 rounded p-2 border border-green-500/30">
+                        <div className="text-xs text-green-300 uppercase">{NETWORK_ZONES[zone]?.name || zone}</div>
+                        <div className="text-lg font-bold">{zoneAssets.length}</div>
+                        <div className="text-xs text-slate-400">users</div>
+                      </div>
+                    )
+                  })}
+                </div>
+                
+                {/* Restricted */}
+                <div className="space-y-2">
+                  <div className="text-xs text-red-500 font-medium">Restricted</div>
+                  {['restricted', 'pci', 'hipaa'].map(zone => {
+                    const zoneAssets = assets.filter(a => a.network_zone === zone)
+                    if (zoneAssets.length === 0) return null
+                    return (
+                      <div key={zone} className="bg-red-900/50 rounded p-2 border border-red-500/50">
+                        <div className="text-xs text-red-200 uppercase">{NETWORK_ZONES[zone]?.name || zone}</div>
+                        <div className="text-lg font-bold">{zoneAssets.length}</div>
+                        <div className="text-xs text-red-300">high security</div>
+                      </div>
+                    )
+                  })}
+                </div>
+                
+                {/* Cloud & Infra */}
+                <div className="space-y-2">
+                  <div className="text-xs text-cyan-400 font-medium">Cloud & Infra</div>
+                  {['cloud-prod', 'cloud-dev', 'mgmt', 'security', 'dr'].map(zone => {
+                    const zoneAssets = assets.filter(a => a.network_zone === zone)
+                    if (zoneAssets.length === 0) return null
+                    return (
+                      <div key={zone} className="bg-cyan-900/30 rounded p-2 border border-cyan-500/30">
+                        <div className="text-xs text-cyan-300 uppercase">{NETWORK_ZONES[zone]?.name || zone}</div>
+                        <div className="text-lg font-bold">{zoneAssets.length}</div>
+                        <div className="text-xs text-slate-400">infra</div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Business Unit Distribution */}
+            <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
+              <div className="text-sm font-semibold text-slate-300 mb-3">Business Unit Segmentation</div>
+              <div className="grid grid-cols-5 gap-3">
+                {BUSINESS_UNITS.map(bu => {
+                  const buAssets = assets.filter(a => a.business_unit === bu.name)
+                  if (buAssets.length === 0) return null
+                  const criticalCount = buAssets.filter(a => a.criticality >= 4).length
+                  const exposedCount = buAssets.filter(a => a.internet_facing).length
+                  return (
+                    <div key={bu.name} className="bg-slate-700/50 rounded-lg p-3">
+                      <div className="text-sm font-medium text-slate-200">{bu.name}</div>
+                      <div className="text-2xl font-bold">{buAssets.length}</div>
+                      <div className="flex gap-2 mt-1">
+                        <span className="text-xs text-red-400">{criticalCount} critical</span>
+                        <span className="text-xs text-yellow-400">{exposedCount} exposed</span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Asset Type Distribution */}
+            <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
+              <div className="text-sm font-semibold text-slate-300 mb-3">Asset Types</div>
+              <div className="grid grid-cols-8 gap-2">
+                {(() => {
+                  const typeCounts: Record<string, number> = {}
+                  assets.forEach(a => { typeCounts[a.type] = (typeCounts[a.type] || 0) + 1 })
+                  return Object.entries(typeCounts)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 16)
+                    .map(([type, count]) => (
+                      <div key={type} className="bg-slate-700/50 rounded p-2 text-center">
+                        <div className="text-xs text-slate-400 capitalize">{type.replace(/_/g, ' ')}</div>
+                        <div className="text-lg font-bold">{count}</div>
+                      </div>
+                    ))
+                })()}
+              </div>
+            </div>
+
+            {/* Category Stats */}
+            <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
+              <div className="text-sm font-semibold text-slate-300 mb-3">Misconfiguration Categories</div>
+              <div className="grid grid-cols-6 gap-3">
+                {Object.entries(stats.byCat).map(([cat, count]) => (
+                  <div key={cat} className="bg-slate-700/50 rounded-lg p-3 text-center">
+                    <div className="text-xs text-slate-400 capitalize">{cat}</div>
+                    <div className="text-xl font-bold">{count}</div>
+                  </div>
+                ))}
               </div>
             </div>
 
             {/* Asset Table */}
             <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-              <div className="p-4 border-b border-slate-700 font-semibold">Environment Assets</div>
+              <div className="p-4 border-b border-slate-700 font-semibold">Enterprise Assets (500 Total)</div>
               <div className="overflow-x-auto max-h-[500px]">
                 <table className="w-full text-sm">
                   <thead className="bg-slate-700/50 sticky top-0">
@@ -524,24 +987,29 @@ export default function BraveGuardian() {
                       <th className="text-left p-3 text-slate-400">Type</th>
                       <th className="text-left p-3 text-slate-400">Zone</th>
                       <th className="text-left p-3 text-slate-400">IP</th>
+                      <th className="text-left p-3 text-slate-400">Business Unit</th>
                       <th className="text-left p-3 text-slate-400">Criticality</th>
                       <th className="text-left p-3 text-slate-400">Misconfigs</th>
-                      <th className="text-left p-3 text-slate-400">Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-700">
-                    {assets.map(asset => (
+                    {assets.slice(0, 100).map(asset => (
                       <tr key={asset.id} className="hover:bg-slate-700/30">
                         <td className="p-3 font-medium">{asset.name}</td>
                         <td className="p-3 text-slate-400 capitalize">{asset.type.replace(/_/g, ' ')}</td>
                         <td className="p-3">
                           <span className={`px-2 py-0.5 rounded text-xs ${
                             asset.network_zone === 'dmz' ? 'bg-red-900/50 text-red-300' :
-                            asset.network_zone === 'restricted' ? 'bg-yellow-900/50 text-yellow-300' :
+                            asset.network_zone.startsWith('prod') ? 'bg-orange-900/50 text-orange-300' :
+                            asset.network_zone.startsWith('dev') ? 'bg-blue-900/50 text-blue-300' :
+                            asset.network_zone === 'restricted' || asset.network_zone === 'pci' || asset.network_zone === 'hipaa' ? 'bg-red-900/50 text-red-200' :
+                            asset.network_zone.startsWith('cloud') ? 'bg-cyan-900/50 text-cyan-300' :
+                            asset.network_zone === 'corp' || asset.network_zone === 'corp-wifi' ? 'bg-green-900/50 text-green-300' :
                             'bg-slate-700 text-slate-300'
-                          }`}>{asset.network_zone}</span>
+                          }`}>{NETWORK_ZONES[asset.network_zone as NetworkZone]?.name || asset.network_zone}</span>
                         </td>
                         <td className="p-3 text-slate-400 font-mono text-xs">{asset.ip}</td>
+                        <td className="p-3 text-slate-400 text-xs">{asset.business_unit}</td>
                         <td className="p-3">
                           <div className="flex gap-1">
                             {[1,2,3,4,5].map(i => (
@@ -554,20 +1022,16 @@ export default function BraveGuardian() {
                             {asset.misconfigurations.length}
                           </span>
                         </td>
-                        <td className="p-3">
-                          <span className={`px-2 py-0.5 rounded text-xs ${
-                            asset.scanStatus === 'completed' ? 'bg-green-900/50 text-green-300' :
-                            asset.scanStatus === 'scanning' ? 'bg-blue-900/50 text-blue-300' :
-                            'bg-slate-700 text-slate-400'
-                          }`}>
-                            {asset.scanStatus || 'pending'}
-                          </span>
-                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+              {assets.length > 100 && (
+                <div className="p-2 text-center text-xs text-slate-400 border-t border-slate-700">
+                  Showing 100 of {assets.length} assets
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -837,38 +1301,78 @@ export default function BraveGuardian() {
             {!result?.attack_paths?.length ? (
               <div className="text-center py-20 text-slate-400">Run analysis to discover paths</div>
             ) : (
-              <div className="grid grid-cols-3 gap-6">
-                {/* Path List */}
-                <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-                  <div className="p-4 border-b border-slate-700 font-semibold">
-                    Paths ({result.attack_paths.length})
-                  </div>
-                  <div className="divide-y divide-slate-700 max-h-[600px] overflow-y-auto">
-                    {result.attack_paths.map((path, i) => (
-                      <button
-                        key={path.path_id}
-                        onClick={() => setSelectedPath(i)}
-                        className={`w-full p-4 text-left hover:bg-slate-700/30 transition-colors ${
-                          selectedPath === i ? 'bg-red-900/20 border-l-2 border-red-500' : ''
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="font-medium">{path.path_id}</span>
-                          <span className={`text-xs px-2 py-0.5 rounded ${
-                            path.final_risk_score > 0.5 ? 'bg-red-900/50 text-red-300' : 'bg-yellow-900/50 text-yellow-300'
-                          }`}>
-                            {Math.round(path.final_risk_score * 100)}% risk
-                          </span>
-                        </div>
-                        <div className="text-xs text-slate-400">{path.nodes.length} steps</div>
-                        <div className="flex gap-2 mt-1 text-xs">
-                          <span className="text-blue-400">P:{Math.round(path.path_probability * 100)}%</span>
-                          <span className="text-green-400">R:{Math.round(path.realism_score * 100)}%</span>
-                        </div>
-                      </button>
-                    ))}
+              <>
+                {/* Unique Paths Summary */}
+                <div className="bg-gradient-to-r from-green-900/30 to-blue-900/30 rounded-xl p-4 border border-green-800/50">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <svg className="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                      </svg>
+                      <span className="font-medium text-green-300">Unique Attack Paths Discovered</span>
+                    </div>
+                    <div className="flex items-center gap-4 text-sm">
+                      <span className="text-slate-300">
+                        {result.attack_paths.length} paths • 
+                        Each uses <span className="text-green-400 font-medium">distinct assets</span>
+                      </span>
+                    </div>
                   </div>
                 </div>
+
+                <div className="grid grid-cols-3 gap-6">
+                  {/* Path List */}
+                  <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                    <div className="p-4 border-b border-slate-700 font-semibold">
+                      Unique Paths ({result.attack_paths.length})
+                    </div>
+                    <div className="divide-y divide-slate-700 max-h-[600px] overflow-y-auto">
+                      {result.attack_paths.map((path, i) => {
+                        // Get unique assets for this path
+                        const uniqueAssets = [...new Set(path.nodes.map(n => n.asset_id))]
+                        const vulnCategories = [...new Set(path.nodes.map(n => n.misconfig_category))]
+                        
+                        return (
+                          <button
+                            key={path.path_id}
+                            onClick={() => setSelectedPath(i)}
+                            className={`w-full p-4 text-left hover:bg-slate-700/30 transition-colors ${
+                              selectedPath === i ? 'bg-red-900/20 border-l-2 border-red-500' : ''
+                            }`}
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="font-medium">{path.path_id}</span>
+                              <span className={`text-xs px-2 py-0.5 rounded ${
+                                path.final_risk_score > 0.5 ? 'bg-red-900/50 text-red-300' : 'bg-yellow-900/50 text-yellow-300'
+                              }`}>
+                                {Math.round(path.final_risk_score * 100)}% risk
+                              </span>
+                            </div>
+                            <div className="text-xs text-slate-400 mb-1">
+                              {uniqueAssets.length} unique assets • {path.nodes.length} steps
+                            </div>
+                            <div className="flex flex-wrap gap-1 mb-1">
+                              {vulnCategories.map((cat, ci) => (
+                                <span key={ci} className={`text-xs px-1.5 py-0.5 rounded ${
+                                  cat === 'authentication' ? 'bg-red-900/40 text-red-300' :
+                                  cat === 'authorization' ? 'bg-purple-900/40 text-purple-300' :
+                                  cat === 'network' ? 'bg-blue-900/40 text-blue-300' :
+                                  cat === 'service' ? 'bg-orange-900/40 text-orange-300' :
+                                  'bg-slate-700 text-slate-300'
+                                }`}>
+                                  {cat}
+                                </span>
+                              ))}
+                            </div>
+                            <div className="flex gap-2 text-xs">
+                              <span className="text-blue-400">P:{Math.round(path.path_probability * 100)}%</span>
+                              <span className="text-green-400">R:{Math.round(path.realism_score * 100)}%</span>
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
 
                 {/* Path Detail */}
                 <div className="col-span-2">
@@ -905,10 +1409,24 @@ export default function BraveGuardian() {
 
                       {/* Steps */}
                       <div className="p-5 border-b border-slate-700">
-                        <h4 className="font-medium mb-4">Attack Chain</h4>
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="font-medium">Attack Chain</h4>
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="text-green-400">
+                              {[...new Set(result.attack_paths[selectedPath].nodes.map(n => n.asset_id))].length} unique assets
+                            </span>
+                          </div>
+                        </div>
                         <div className="space-y-3">
                           {result.attack_paths[selectedPath].nodes.map((node, i) => {
                             const edge = result.attack_paths[selectedPath].edges[i]
+                            const categoryColor = 
+                              node.misconfig_category === 'authentication' ? 'bg-red-900/40 text-red-300 border-red-700' :
+                              node.misconfig_category === 'authorization' ? 'bg-purple-900/40 text-purple-300 border-purple-700' :
+                              node.misconfig_category === 'network' ? 'bg-blue-900/40 text-blue-300 border-blue-700' :
+                              node.misconfig_category === 'service' ? 'bg-orange-900/40 text-orange-300 border-orange-700' :
+                              'bg-slate-700 text-slate-300 border-slate-600'
+                            
                             return (
                               <div key={i} className="flex gap-4">
                                 <div className="flex flex-col items-center">
@@ -923,8 +1441,14 @@ export default function BraveGuardian() {
                                   <div className="flex items-center gap-2 mb-1">
                                     <span className="font-medium">{node.asset_name}</span>
                                     <span className="text-xs px-1.5 py-0.5 bg-slate-700 rounded uppercase">{node.asset_zone}</span>
+                                    <span className="text-xs px-1.5 py-0.5 bg-slate-600 rounded capitalize">{node.asset_type.replace(/_/g, ' ')}</span>
                                   </div>
-                                  <div className="text-sm text-orange-400">{node.misconfig_title}</div>
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <span className="text-sm text-orange-400">{node.misconfig_title}</span>
+                                    <span className={`text-xs px-1.5 py-0.5 rounded border ${categoryColor}`}>
+                                      {node.misconfig_category}
+                                    </span>
+                                  </div>
                                   {edge && (
                                     <div className="mt-1 text-xs bg-slate-700/50 p-2 rounded">
                                       <div className="flex items-center gap-2">
@@ -980,6 +1504,7 @@ export default function BraveGuardian() {
                   )}
                 </div>
               </div>
+              </>
             )}
           </div>
         )}
