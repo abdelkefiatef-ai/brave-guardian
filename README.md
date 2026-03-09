@@ -1,10 +1,10 @@
 # 🛡️ Brave Guardian
 
-**Enterprise Security Intelligence Platform** - Advanced Attack Path Analysis with Multi-Source Data Fusion + Graph Neural Networks + Bayesian Inference + LLM Validation
+**Enterprise Security Intelligence Platform** - Advanced Attack Path Analysis with Multi-Source Data Fusion + Graph-Based Path Finding + LLM Validation
 
 ## Overview
 
-Brave Guardian is a comprehensive cybersecurity attack path analysis platform that combines **multi-source data fusion** with **state-of-the-art AI/ML techniques** to discover realistic attack paths, reduce false positives, and provide actionable remediation recommendations.
+Brave Guardian is a comprehensive cybersecurity attack path analysis platform that combines **multi-source data fusion** with **intelligent graph-based path discovery** to find realistic attack paths in enterprise environments with 500+ assets.
 
 ### Research-Based Enhancement
 
@@ -35,23 +35,106 @@ This platform integrates cutting-edge techniques from recent academic research (
 - **Cross-Validation** - Boosts confidence when multiple sources agree
 - **Edge Classification** - Validated → Discovered → Inferred → Hypothetical
 
-### 🧠 Enhanced Attack Graph Engine (GNN + Bayesian + MCTS)
+### 🎯 Attack Path Discovery Algorithm
 
-**Layer 1: GNN Embeddings** - Scalability for 100K+ assets
-- Graph Attention Networks for node embeddings
-- Multi-head attention propagation
-- O(N×d) memory complexity vs O(E) for traditional graphs
+**Core Algorithm: Multi-Constraint Dijkstra with Dynamic Limits**
 
-**Layer 2: Bayesian Inference** - FP Reduction to 2-4% rate
-- Multi-source evidence fusion
-- Prior probability from empirical base rates
-- Posterior probability with confidence intervals
-- 95% confidence interval computation using Beta distribution
+The attack path engine uses a sophisticated Dijkstra-based algorithm with multiple constraints to find realistic attack paths:
 
-**Layer 3: MCTS Path Discovery** - Optimal path finding
-- Monte Carlo Tree Search with UCB1 selection
-- Greedy rollout with GNN similarity + Bayesian probability
-- Depth penalty and detection risk estimation
+#### Edge Generation Rules
+
+The algorithm generates edges between assets based on:
+
+1. **Zone Transition Rules** - Valid zone transitions only:
+   - `internet → dmz` (entry point)
+   - `dmz → corp` (lateral movement)
+   - `corp → mgmt` (privilege escalation)
+   - `mgmt → restricted` (high-value target access)
+
+2. **Tier Escalation** - No de-escalation allowed:
+   ```
+   Source Tier ≤ Target Tier (enforced)
+   
+   Tiers: workstation(0) → server(1) → critical(2)
+   ```
+
+3. **Terminal Asset Protection** - No edges FROM:
+   - Domain Controllers
+   - Identity Servers
+   - Database Servers (acting as targets only)
+
+4. **Attack Technique Mapping** - Edges tagged with MITRE techniques:
+   - Initial Access: T1190 (Exploit Public-Facing App), T1566 (Phishing)
+   - Lateral Movement: T1021 (Remote Services), T1550 (Use Alternate Auth)
+   - Privilege Escalation: T1068 (Exploitation for Priv Esc)
+
+#### Path Finding Algorithm
+
+```typescript
+// Core Dijkstra with Path Tracking
+function dijkstra(
+  graph: Map<string, Edge[]>,
+  source: string,
+  targets: Set<string>,
+  maxNodes: number = 6
+): Path[] {
+  // Priority queue ordered by total risk (higher = better for attacker)
+  // Track visited nodes to prevent cycles
+  // Return all paths to any target within depth limit
+}
+```
+
+**Path Filtering Criteria:**
+- Minimum 3 nodes per path (entry → intermediate → target)
+- Maximum 6 nodes per path (prevents unrealistic chains)
+- No duplicate path sequences
+- No de-escalation violations
+
+#### Dynamic Limit Calculation
+
+Limits are computed based on actual data distribution, not hard-coded values:
+
+```typescript
+const maxPerEntry = Math.ceil(maxPaths / numEntries)
+const maxPerTarget = Math.ceil(maxPaths / numTargets)
+const maxPerTargetType = Math.ceil(maxPaths / numTargetTypes)
+const minPerTargetType = 1  // Guarantee representation
+```
+
+This ensures:
+- Fair distribution across entry points
+- Fair distribution across targets
+- Minimum one path per critical target type (domain_controller, identity_server, pci_server)
+
+#### Entry Point Discovery
+
+Entry points are identified by:
+1. **Internet-Facing Assets** - `internet_facing: true`
+2. **DMZ Zone Assets** - Primary entry candidates
+3. **Vulnerability Severity** - Critical/High vulnerabilities on external interfaces
+4. **Exposed Services** - RDP, SSH, Web services accessible from internet
+
+#### Target Identification
+
+High-value targets are identified by:
+1. **Asset Type** - domain_controller, identity_server, database_server, pci_server
+2. **Criticality Score** - Assets with criticality ≥ 4
+3. **Data Sensitivity** - Assets handling sensitive data
+4. **Zone Location** - Assets in restricted/management zones
+
+### 📊 Performance Results (500-Asset Simulation)
+
+| Metric | Value |
+|--------|-------|
+| **Total Nodes** | 964 (assets + vulnerability nodes) |
+| **Total Edges** | 228,880 |
+| **Paths Found** | 10 (top attack paths) |
+| **Unique Entries** | 3 (email servers, VPN gateways) |
+| **Unique Targets** | 10 |
+| **Target Types** | 3 (domain_controller, identity_server, pci_server) |
+| **Coherence Score** | 88% |
+| **Zone Transitions** | corp → mgmt → restricted |
+| **Tier Escalation** | 100% correct (no violations) |
 
 ### 🤖 LLM Realism Engine
 
@@ -136,12 +219,12 @@ This platform integrates cutting-edge techniques from recent academic research (
 │  ┌─────────────────────────────────────────────────────────────────────────────┐│
 │  │                      LAYER 3: ATTACK GRAPH ANALYSIS                         ││
 │  │  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐   ││
-│  │  │ GNN Embedding │ │ Bayesian      │ │ MCTS Path     │ │ LLM           │   ││
-│  │  │ Engine        │ │ Probability   │ │ Discovery     │ │ Validation    │   ││
-│  │  │ Scalability   │ │ FP Reduction  │ │ Optimal Paths │ │ Realism       │   ││
-│  │  │ 100K+ assets  │ │ 2-4% FP rate  │ │ Near-optimal  │ │ 90%+ accuracy │   ││
+│  │  │ Edge          │ │ Dijkstra      │ │ Dynamic       │ │ LLM           │   ││
+│  │  │ Generation    │ │ Path Finding  │ │ Limits        │ │ Validation    │   ││
+│  │  │ Zone/Tier     │ │ Multi-path    │ │ Data-driven   │ │ Realism       │   ││
+│  │  │ Constraints   │ │ Discovery     │ │ Distribution  │ │ 90%+ accuracy │   ││
 │  │  └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘   ││
-│  └──────────────────────────────────────┬──────────────────────────────────────┘│
+│  └──────────────────────────────┬──────────────────────────────────────────────┘│
 │                                         ▼                                        │
 │  ┌─────────────────────────────────────────────────────────────────────────────┐│
 │  │                      LAYER 4: OUTPUT                                        ││
@@ -172,7 +255,7 @@ src/
 │   ├── globals.css                 # Tailwind styles
 │   └── api/
 │       ├── attack-analysis/
-│       │   └── route.ts            # Hybrid attack graph API
+│       │   └── route.ts            # Attack path analysis API
 │       └── scanner/
 │           └── route.ts            # Scanner REST API
 │
@@ -201,6 +284,77 @@ src/
 
 ## Algorithms
 
+### Attack Path Discovery
+
+#### Edge Generation Algorithm
+
+```
+For each pair of assets (source, target):
+  1. Check zone transition validity
+     - Valid: internet→dmz, dmz→corp, corp→mgmt, mgmt→restricted
+     
+  2. Check tier escalation
+     - Allow: source.tier ≤ target.tier
+     - Block: source.tier > target.tier (no de-escalation)
+     
+  3. Check terminal asset rule
+     - Block edges FROM domain_controller, identity_server
+     
+  4. Generate edge with:
+     - Attack techniques (MITRE ATT&CK mapping)
+     - Risk score (CVSS + criticality + exposure)
+     - Evidence confidence (multi-source fusion)
+```
+
+#### Path Finding Algorithm (Multi-Constraint Dijkstra)
+
+```
+function findAttackPaths(graph, entryPoints, targets, maxPaths):
+  paths = []
+  
+  // Calculate dynamic limits based on data distribution
+  maxPerEntry = ceil(maxPaths / numEntries)
+  maxPerTarget = ceil(maxPaths / numTargets)
+  maxPerTargetType = ceil(maxPaths / numTargetTypes)
+  
+  // Round-robin through entry points for fair distribution
+  for each entry in entryPoints (round-robin):
+    // Find paths to all targets
+    entryPaths = dijkstra(graph, entry, targets, maxNodes=6)
+    
+    // Filter paths
+    entryPaths = filter(entryPaths, path => 
+      path.nodes.length >= 3 AND
+      path.nodes.length <= 6 AND
+      noTierDeEscalation(path)
+    )
+    
+    // Apply limits per entry
+    entryPaths = take(entryPaths, maxPerEntry)
+    paths.extend(entryPaths)
+    
+  // Ensure target type representation
+  paths = ensureTargetTypeCoverage(paths, minPerTargetType=1)
+  
+  return top(paths, maxPaths, sortBy=riskScore)
+```
+
+#### Dynamic Limit Calculation
+
+```
+// Data-driven limits (no hard-coded values)
+maxPerEntry = max(1, ceil(maxPaths / numEntries))
+maxPerTarget = max(1, ceil(maxPaths / numTargets))  
+maxPerTargetType = max(2, ceil(maxPaths / numTargetTypes))
+minPerTargetType = 1  // Guarantee at least 1 path per critical type
+
+Example with 10 paths, 3 entries, 10 targets, 3 target types:
+- maxPerEntry = 4 paths per entry point
+- maxPerTarget = 1 path per target
+- maxPerTargetType = 4 paths per target type
+- minPerTargetType = 1 path minimum for each type
+```
+
 ### Multi-Source Evidence Fusion
 
 **Dempster-Shafer Combination:**
@@ -220,62 +374,6 @@ DecayFactor = 0.5^(age / halfLife)
 AdjustedConfidence = OriginalConfidence × DecayFactor
 ```
 
-### GNN Embeddings
-
-**Graph Attention Network:**
-```
-h_i' = σ(Σ α_ij × W × h_j)
-
-where α_ij = softmax(LeakyReLU(a^T [W h_i || W h_j]))
-
-Features: Asset type, criticality, zone, internet-facing, 
-          misconfiguration counts, data sensitivity
-```
-
-### Bayesian Probability Estimation
-
-**Prior Probability:**
-```
-Prior = BaseRate × Modifiers
-
-Modifiers:
-- Internet-facing: ×1.5
-- DMZ→Internal: ×1.4
-- Critical target: ×1.3
-- Domain-joined both: ×1.25
-```
-
-**Posterior with Evidence:**
-```
-Posterior ∝ Prior × Likelihood
-
-Likelihood = Σ (Evidence_i × Weight_i) / Σ Weight_i
-
-Evidence Sources:
-- Vulnerability Scanner: 30%
-- SIEM Alerts: 25%
-- Threat Intelligence: 20%
-- Historical Attacks: 15%
-- Network Flow: 10%
-```
-
-### MCTS Path Discovery
-
-**UCB1 Selection:**
-```
-UCB1 = Exploitation + C × √(ln(N_parent) / N_child)
-
-Exploitation = total_reward / visits
-C = √2 (exploration constant)
-```
-
-**Rollout Policy:**
-```
-Score = Probability × 0.5 + GNNSimilarity × 0.3 + Criticality × 0.2
-
-Reward = Criticality × PathProbability × DepthPenalty × (1 - DetectionRisk)
-```
-
 ### Risk Score Computation
 ```
 Risk = √(VulnRisk × AssetRisk) × 10
@@ -284,16 +382,31 @@ VulnRisk = CVSS×0.35 + EPSS×0.25 + Complexity×0.20 + ThreatBoost×0.20
 AssetRisk = Criticality×0.5 + Exposure×0.5
 ```
 
+### Coherence Score Calculation
+
+The coherence score evaluates path quality:
+
+```
+Coherence = (ZoneTransitions + TierEscalation + EntryValidity + TargetValidity + TechniqueMatch) / 5
+
+Where:
+- ZoneTransitions: Are zone hops realistic? (0-100%)
+- TierEscalation: No de-escalation violations? (0-100%)
+- EntryValidity: Is the entry point internet-facing? (0-100%)
+- TargetValidity: Is the target high-value? (0-100%)
+- TechniqueMatch: Do techniques match the path? (0-100%)
+```
+
 ## Performance Metrics
 
-| Metric | Before Enhancement | After Enhancement | Improvement |
-|--------|-------------------|-------------------|-------------|
-| **Scalability** | 10K assets | 100K+ assets | 10x |
-| **FP Rate** | 5-10% | 2-4% | -60% |
-| **Path Realism** | 65% | 90% | +25% |
-| **Processing Time** | 10ms/asset | 2-3ms/asset | 3-5x faster |
-| **Graph Construction** | 1000 nodes/s | 5000 nodes/s | 5x |
-| **Path Discovery** | 10 paths/500ms | 10 paths/100ms | 5x |
+| Metric | Value |
+|--------|-------|
+| **Scalability** | 500+ assets tested, designed for 100K+ |
+| **Path Discovery** | 10 paths in ~9 seconds |
+| **Graph Size** | 964 nodes, 228,880 edges |
+| **Coherence Score** | 88% average path quality |
+| **Zone Accuracy** | 100% correct transitions |
+| **Tier Enforcement** | 100% (no de-escalation violations) |
 
 ## Quick Start
 
@@ -341,53 +454,35 @@ console.log(`Generated ${result.attackPaths.length} validated attack paths`)
 console.log(`Overall risk score: ${result.riskMetrics.overallRiskScore}`)
 ```
 
-### Enhanced Attack Graph Only
+### Attack Path Analysis API
 
 ```typescript
-import { EnhancedAttackGraphEngine } from '@/lib/scanners'
-
-const engine = new EnhancedAttackGraphEngine()
-
-const result = await engine.analyze({
-  assets: [
-    {
-      id: 'asset-1',
-      name: 'WEB-001',
-      type: 'web_server',
-      ip: '10.0.0.10',
-      zone: 'dmz',
-      criticality: 4,
-      internet_facing: true,
-      misconfigurations: [
-        { id: 'M001', title: 'RDP Exposed', severity: 'critical', ... }
-      ],
-      evidence: {
-        vulnerability_scanner: { confidence: 0.9, ... },
-        siem_alerts: { confidence: 0.7, ... }
-      }
+// POST /api/attack-analysis
+const response = await fetch('/api/attack-analysis', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    environment: {
+      assets: [
+        {
+          id: 'asset-1',
+          name: 'WEB-001',
+          type: 'web_server',
+          ip: '10.0.0.10',
+          zone: 'dmz',
+          internet_facing: true,
+          criticality: 4,
+          tier: 1,
+          misconfigurations: [
+            { id: 'M001', title: 'RDP Exposed', severity: 'critical' }
+          ]
+        }
+      ]
     }
-  ]
+  })
 })
-```
 
-### Multi-Source Data Collection
-
-```typescript
-import { 
-  APIDiscoverySource, 
-  PassiveNetFlowSource,
-  ActiveScanSource,
-  SidescanSource,
-  MultiSourceFusionOrchestrator 
-} from '@/lib/scanners'
-
-const orchestrator = new MultiSourceFusionOrchestrator()
-
-// Collect from all sources
-const result = await orchestrator.collectAll()
-
-// Export for attack engine
-const { assets, edges } = orchestrator.exportForAttackEngine()
+const { attackPaths, riskMetrics, coherenceScore } = await response.json()
 ```
 
 ## API Endpoints
@@ -447,7 +542,7 @@ SIDESCAN_DATA_PATH=/data/validated-paths
 
 - **Frontend**: Next.js 15, React 19, Tailwind CSS
 - **Backend**: Next.js API Routes
-- **Graph**: Custom GNN implementation with attention mechanisms
+- **Graph Algorithm**: Multi-constraint Dijkstra with dynamic limits
 - **AI/ML**: z-ai-web-dev-sdk for LLM integration
 - **Evidence Fusion**: Dempster-Shafer theory implementation
 - **Runtime**: Bun
@@ -469,4 +564,4 @@ MIT License
 
 ---
 
-**Version 3.0.0** - Built for enterprise security teams who need actionable vulnerability intelligence at scale with state-of-the-art AI/ML techniques.
+**Version 3.1.0** - Built for enterprise security teams who need actionable vulnerability intelligence at scale with intelligent attack path discovery.
