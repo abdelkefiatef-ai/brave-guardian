@@ -233,7 +233,7 @@ export type {
   FusedAnalysisConfig,
   FusedAnalysisResult,
   AttackerProfileConfig,
-  RiskMetrics as FusedRiskMetrics,
+  // RiskMetrics excluded - use RiskMetrics from enhanced-attack-engine
   AttackVector,
   Mitigation
 } from './fused-attack-engine'
