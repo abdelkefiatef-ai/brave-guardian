@@ -706,6 +706,7 @@ class MCTSPathDiscoveryEngine {
   private explorationConstant = 1.414  // sqrt(2) for UCB
   private maxSimulations = 10000
   private maxDepth = 6
+  private minDepth = 3  // Minimum 3 nodes: entry → intermediate → target
   private root: MCTSNode | null = null
   private gnnEngine: GNNEmbeddingEngine
   private bayesianEngine: BayesianProbabilityEngine
@@ -972,8 +973,9 @@ class MCTSPathDiscoveryEngine {
     while (stack.length > 0) {
       const { node, path } = stack.pop()!
       
-      if (targetAssets.has(node.asset_id) && path.length > 1) {
-        // Found a complete path
+      // Require minimum 3 nodes for realistic attack paths (entry → intermediate → target)
+      if (targetAssets.has(node.asset_id) && path.length >= this.minDepth) {
+        // Found a complete path with sufficient depth
         const attackPath = this.constructPath(path, assetMap)
         paths.push(attackPath)
       }
