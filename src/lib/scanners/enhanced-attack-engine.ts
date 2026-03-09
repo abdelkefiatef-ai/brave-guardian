@@ -16,6 +16,7 @@
 // ============================================================================
 
 import { EventEmitter } from 'events'
+import ZAI from 'z-ai-web-dev-sdk'
 
 // ============================================================================
 // TYPES
@@ -710,6 +711,7 @@ class MCTSPathDiscoveryEngine {
   private root: MCTSNode | null = null
   private gnnEngine: GNNEmbeddingEngine
   private bayesianEngine: BayesianProbabilityEngine
+  private crownJewelCache: Map<string, boolean> = new Map()  // Cache LLM evaluations
   
   constructor(gnnEngine: GNNEmbeddingEngine, bayesianEngine: BayesianProbabilityEngine) {
     this.gnnEngine = gnnEngine
@@ -727,6 +729,17 @@ class MCTSPathDiscoveryEngine {
     assetMap: Map<string, EnhancedAsset>
   ): Promise<RealisticAttackPath[]> {
     const paths: RealisticAttackPath[] = []
+    
+    // PRE-EVALUATE CROWN JEWELS USING LLM
+    // This avoids async calls during MCTS simulation
+    console.log('[MCTS] Pre-evaluating crown jewels with LLM...')
+    for (const [assetId, asset] of assetMap) {
+      const isCrownJewel = await this.isTerminalAssetLLM(asset)
+      if (isCrownJewel) {
+        console.log(`[MCTS] 👑 Crown jewel identified: ${asset.name} (${asset.type})`)
+      }
+    }
+    console.log(`[MCTS] Crown jewel evaluation complete. Found ${Array.from(this.crownJewelCache.values()).filter(v => v).length} crown jewels`)
     
     for (const entry of entryPoints) {
       // Initialize root
@@ -802,10 +815,9 @@ class MCTSPathDiscoveryEngine {
   ): MCTSNode {
     if (node.depth >= this.maxDepth) return node
     
-    // TERMINAL ASSET RULE: Once we reach a crown jewel (DC, identity_server, etc.),
-    // the attack is complete - no further expansion needed
+    // TERMINAL ASSET RULE: Check if this is a crown jewel using LLM-cached result
     const currentAsset = assetMap.get(node.asset_id)
-    if (currentAsset && this.isTerminalAsset(currentAsset.type)) {
+    if (currentAsset && this.isCrownJewelCached(currentAsset)) {
       return node // Stop expansion - this is a crown jewel
     }
     
@@ -852,13 +864,100 @@ class MCTSPathDiscoveryEngine {
     return node
   }
   
-  private isTerminalAsset(assetType: string): boolean {
-    const terminalTypes = [
-      'domain_controller', 'active_directory', 'identity_server', 
-      'pki_server', 'certificate_authority', 'bastion_host', 
-      'pci_server', 'hipaa_server'
-    ]
-    return terminalTypes.includes(assetType.toLowerCase())
+  /**
+   * LLM-based Crown Jewel Evaluation
+   * Determines if an asset is a terminal target (attacker wins) based on context
+   * NOT hardcoded - uses LLM knowledge of attack value
+   */
+  private async isTerminalAssetLLM(asset: EnhancedAsset): Promise<boolean> {
+    // Check cache first
+    const cacheKey = `${asset.id}:${asset.type}:${asset.criticality}:${asset.data_sensitivity}`
+    if (this.crownJewelCache.has(cacheKey)) {
+      return this.crownJewelCache.get(cacheKey)!
+    }
+    
+    // Use LLM to evaluate if this is a crown jewel
+    const prompt = `You are a senior red team operator. Evaluate if compromising this asset means "ATTACKER WINS" (game over for defender).
+
+ASSET:
+- Name: ${asset.name}
+- Type: ${asset.type}
+- Zone: ${asset.zone}
+- Criticality: ${asset.criticality}/5
+- Data Sensitivity: ${asset.data_sensitivity}
+- Services: ${asset.services?.join(', ') || 'unknown'}
+- Domain Joined: ${asset.domain_joined ? 'Yes' : 'No'}
+
+CROWN JEWEL CRITERIA:
+- Compromising this asset gives attacker CONTROL of the entire environment
+- Examples: Domain Controller (controls all auth), Identity Provider (controls all access), PKI/CA (controls all certificates)
+- NOT crown jewels: Web servers, app servers, databases (valuable but not game-over)
+
+Respond with JSON:
+{
+  "is_crown_jewel": true/false,
+  "reasoning": "brief explanation",
+  "attacker_value": "domain_control" | "identity_control" | "certificate_control" | "data_access" | "pivotal_access"
+}`
+
+    try {
+      const zai = await ZAI.create()
+      const completion = await zai.chat.completions.create({
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.1,
+        max_tokens: 200
+      })
+      
+      const response = completion.choices?.[0]?.message?.content || ''
+      const jsonMatch = response.match(/\{[\s\S]*\}/)
+      
+      if (jsonMatch) {
+        const result = JSON.parse(jsonMatch[0])
+        const isCrownJewel = result.is_crown_jewel === true
+        
+        // Cache the result
+        this.crownJewelCache.set(cacheKey, isCrownJewel)
+        
+        console.log(`[CROWN JEWEL LLM] ${asset.name}: ${isCrownJewel ? '👑 YES' : '❌ NO'} - ${result.reasoning || result.attacker_value}`)
+        
+        return isCrownJewel
+      }
+    } catch (error) {
+      console.error('[CROWN JEWEL LLM] Error:', error)
+    }
+    
+    // Fallback: Use criticality as proxy (5 = likely crown jewel)
+    const fallback = asset.criticality >= 5
+    this.crownJewelCache.set(cacheKey, fallback)
+    return fallback
+  }
+  
+  /**
+   * Synchronous fallback for cases where we can't await
+   */
+  private isTerminalAssetFallback(asset: EnhancedAsset): boolean {
+    // Quick heuristics based on asset properties
+    const highValueTypes = ['domain_controller', 'identity_server', 'pki_server', 'certificate_authority']
+    const isHighValueType = highValueTypes.some(t => asset.type.toLowerCase().includes(t))
+    const hasHighSensitivity = ['credentials', 'pii', 'financial'].includes(asset.data_sensitivity?.toLowerCase())
+    
+    return isHighValueType || (asset.criticality >= 5 && hasHighSensitivity)
+  }
+  
+  /**
+   * Check if asset is a crown jewel using LLM-cached result
+   * Used during MCTS when we need synchronous access
+   */
+  private isCrownJewelCached(asset: EnhancedAsset): boolean {
+    const cacheKey = `${asset.id}:${asset.type}:${asset.criticality}:${asset.data_sensitivity}`
+    
+    // Return cached LLM result if available
+    if (this.crownJewelCache.has(cacheKey)) {
+      return this.crownJewelCache.get(cacheKey)!
+    }
+    
+    // Fallback to heuristics if not in cache
+    return this.isTerminalAssetFallback(asset)
   }
 
   private async simulate(
@@ -877,9 +976,9 @@ class MCTSPathDiscoveryEngine {
     while (depth < this.maxDepth && cumulativeProbability > 0.01) {
       const currentAsset = assetMap.get(current)
       
-      // CROWN JEWEL RULE: Stop at terminal assets (DC, identity_server, etc.)
+      // CROWN JEWEL RULE: Stop at crown jewels using LLM-cached result
       // Once we compromise the crown jewels, the attack is complete
-      if (currentAsset && this.isTerminalAsset(currentAsset.type)) {
+      if (currentAsset && this.isCrownJewelCached(currentAsset)) {
         reward = this.computeTerminalReward(node, currentAsset)
         break
       }
@@ -1000,9 +1099,9 @@ class MCTSPathDiscoveryEngine {
       
       const nodeAsset = assetMap.get(node.asset_id)
       const isTarget = targetAssets.has(node.asset_id)
-      const isTerminal = nodeAsset && this.isTerminalAsset(nodeAsset.type)
+      const isTerminal = nodeAsset && this.isCrownJewelCached(nodeAsset)
       
-      // Valid end point: either it's in targetAssets OR it's a crown jewel (DC, identity_server, etc.)
+      // Valid end point: either it's in targetAssets OR it's a crown jewel (LLM-determined)
       if ((isTarget || isTerminal) && path.length >= 3) {
         // Determine minimum required path length based on zone transitions
         const minRequiredLength = this.getMinPathLength(path, assetMap)
