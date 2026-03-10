@@ -1,6 +1,6 @@
 # 🛡️ Brave Guardian
 
-**Enterprise Security Intelligence Platform** - Advanced Attack Path Analysis with Multi-Source Data Fusion + Graph Neural Networks + Bayesian Inference + LLM Validation
+**Enterprise Security Intelligence Platform** - Advanced Attack Path Analysis with Multi-Source Data Fusion + Graph Neural Networks + Bayesian Inference + LLM Validation (OpenRouter/Qwen3)
 
 ## Overview
 
@@ -15,6 +15,40 @@ This platform integrates cutting-edge techniques from recent academic research (
 - **Bayesian Attack Graphs**: Probabilistic inference for IoT/power systems
 - **GNN**: Graph Neural Networks for attack prediction
 - **ShotFlex**: RL + MCTS path planning
+
+## 🆕 Latest Features (v4.0)
+
+### Triple Algorithm Comparison
+
+The platform now includes a comprehensive comparison framework for three attack path algorithms:
+
+| Algorithm | Description | Strengths |
+|-----------|-------------|-----------|
+| **PageRank + Dijkstra** | Classic graph traversal with importance scoring | Fast, deterministic, good baseline |
+| **Old GNN+MCTS** | GNN embeddings + MCTS without optimizations | Baseline ML approach |
+| **New GNN+Bayesian+MCTS** | Optimized with validation rules + caching | Highest realism, validation rules |
+
+### OpenRouter LLM Integration
+
+**LLM Provider:** OpenRouter API  
+**Model:** Qwen3 Next 80B A3B Instruct
+
+The LLM validation layer uses Qwen3 for semantic realism assessment:
+- Entry point validation (attacker feasibility)
+- Exit point validation (target value)
+- Path realism assessment (technical feasibility)
+- Attack narrative generation (human-readable stories)
+
+### Hard Constraint Validation Rules
+
+The New GNN+MCTS algorithm implements validation rules at graph construction:
+
+| Rule | Description | Effect |
+|------|-------------|--------|
+| **No terminal asset edges** | Backup/log servers can't be attack sources | REJECT |
+| **No tier de-escalation** | DMZ(1) → Internal(2) → Restricted(3) only | REJECT |
+| **Zone layer validation** | DMZ→Restricted requires privilege escalation | REJECT |
+| **Layer jump penalty** | Multi-zone jumps get probability reduction | 15-75% penalty |
 
 ## Key Features
 
@@ -43,7 +77,7 @@ This platform integrates cutting-edge techniques from recent academic research (
 - O(N×d) memory complexity vs O(E) for traditional graphs
 
 **Layer 2: Bayesian Inference** - FP Reduction to 2-4% rate
-- Multi-source evidence fusion
+- Multi-source evidence fusion (5 sources)
 - Prior probability from empirical base rates
 - Posterior probability with confidence intervals
 - 95% confidence interval computation using Beta distribution
@@ -52,15 +86,21 @@ This platform integrates cutting-edge techniques from recent academic research (
 - Monte Carlo Tree Search with UCB1 selection
 - Greedy rollout with GNN similarity + Bayesian probability
 - Depth penalty and detection risk estimation
+- Early termination when high-quality paths found
 
-### 🤖 LLM Realism Engine
+### 🤖 LLM Realism Engine (OpenRouter + Qwen3)
 
-**Strategic LLM validation for path realism:**
+**Strategic LLM validation for path realism using Qwen3 Next 80B:**
 
 - **Entry Point Validation** - Is this a realistic attacker entry?
 - **Exit Point Validation** - Does this target have attacker value?
 - **Path Realism Assessment** - Technical feasibility scoring
 - **Attack Narrative Generation** - Human-readable attack stories
+
+**Blended Scoring:**
+```
+Final Realism = 40% Algorithmic + 60% LLM
+```
 
 ### 🚀 Scalable Scanner Architecture
 
@@ -81,13 +121,6 @@ This platform integrates cutting-edge techniques from recent academic research (
 - **Service Detection** - Infer zones from running services
 - **Cloud Metadata** - AWS/Azure/GCP zone identification
 
-### 🌐 Network Topology Collection
-
-- **Identity Systems** - Active Directory users, groups, computers
-- **Access Patterns** - SMB shares, RDP sessions, network connections
-- **Trust Relationships** - Domain trusts, forest trusts
-- **Service Discovery** - Running services, open ports, protocols
-
 ### 🎯 False Positive Reduction
 
 - **Context Validation** - Checks if vulnerability applies to asset context
@@ -96,70 +129,65 @@ This platform integrates cutting-edge techniques from recent academic research (
 - **Temporal Correlation** - Cross-references findings over time
 - **Confidence Scoring** - Probability-weighted results (2-4% FP rate with Bayesian)
 
-### 📊 Enterprise Dashboard
-
-- **5 Views**: Environment, Scanner, Analysis, Paths, Algorithm
-- **Real-time Progress** - WebSocket/SSE streaming for scan updates
-- **Network Zone Distribution** - DMZ, Internal, Restricted visualization
-- **Kill Chain Mapping** - MITRE ATT&CK phase alignment
-- **Remediation Prioritization** - Effort vs. Impact analysis
-
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                          BRAVE GUARDIAN ARCHITECTURE v3.0                        │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                  │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐│
-│  │                      LAYER 1: DATA COLLECTION                               ││
-│  │  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐   ││
-│  │  │ API Discovery │ │ Passive       │ │ Active Scan   │ │ Sidescan      │   ││
-│  │  │ Conf: 0.90    │ │ NetFlow       │ │ Conf: 0.70    │ │ Conf: 0.95    │   ││
-│  │  │ 100% Coverage │ │ Conf: 0.85    │ │ Targeted      │ │ Validated     │   ││
-│  │  └───────┬───────┘ └───────┬───────┘ └───────┬───────┘ └───────┬───────┘   ││
-│  │          │                 │                 │                 │           ││
-│  │          └─────────────────┴─────────────────┴─────────────────┘           ││
-│  │                                      │                                     ││
-│  └──────────────────────────────────────┼─────────────────────────────────────┘│
-│                                         ▼                                        │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐│
-│  │                      LAYER 2: EVIDENCE FUSION                               ││
-│  │  ┌───────────────────────────────────────────────────────────────────────┐  ││
-│  │  │              Dempster-Shafer Evidence Combination                      │  ││
-│  │  │  • Conflict Resolution  • Temporal Decay  • Cross-Validation          │  ││
-│  │  └───────────────────────────────────────────────────────────────────────┘  ││
-│  │                              │                                              ││
-│  │  Edge Classification: Validated → Discovered → Inferred → Hypothetical     ││
-│  └──────────────────────────────┼──────────────────────────────────────────────┘│
-│                                 ▼                                                │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐│
-│  │                      LAYER 3: ATTACK GRAPH ANALYSIS                         ││
-│  │  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐   ││
-│  │  │ GNN Embedding │ │ Bayesian      │ │ MCTS Path     │ │ LLM           │   ││
-│  │  │ Engine        │ │ Probability   │ │ Discovery     │ │ Validation    │   ││
-│  │  │ Scalability   │ │ FP Reduction  │ │ Optimal Paths │ │ Realism       │   ││
-│  │  │ 100K+ assets  │ │ 2-4% FP rate  │ │ Near-optimal  │ │ 90%+ accuracy │   ││
-│  │  └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘   ││
-│  └──────────────────────────────────────┬──────────────────────────────────────┘│
-│                                         ▼                                        │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐│
-│  │                      LAYER 4: OUTPUT                                        ││
-│  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────────────┐   ││
-│  │  │ Validated   │ │ Risk        │ │ Mitigation  │ │ Attack Narratives   │   ││
-│  │  │ Attack Paths│ │ Metrics     │ │ Recommendations│                   │   ││
-│  │  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────────────┘   ││
-│  └─────────────────────────────────────────────────────────────────────────────┘│
-│                                         │                                        │
-│                                         ▼                                        │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐│
-│  │                      PRESENTATION LAYER                                     ││
-│  │  ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐││
-│  │  │Environment │ │  Scanner   │ │  Analysis  │ │   Paths    │ │   Algo     │││
-│  │  │    View    │ │    View    │ │    View    │ │    View    │ │   View     │││
-│  │  └────────────┘ └────────────┘ └────────────┘ └────────────┘ └────────────┘││
-│  └─────────────────────────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                          BRAVE GUARDIAN ARCHITECTURE v4.0                            │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                      │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐    │
+│  │                      LAYER 1: DATA COLLECTION                               │    │
+│  │  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐   │    │
+│  │  │ API Discovery │ │ Passive       │ │ Active Scan   │ │ Sidescan      │   │    │
+│  │  │ Conf: 0.90    │ │ NetFlow       │ │ Conf: 0.70    │ │ Conf: 0.95    │   │    │
+│  │  │ 100% Coverage │ │ Conf: 0.85    │ │ Targeted      │ │ Validated     │   │    │
+│  │  └───────┬───────┘ └───────┬───────┘ └───────┬───────┘ └───────┬───────┘   │    │
+│  │          │                 │                 │                 │           │    │
+│  │          └─────────────────┴─────────────────┴─────────────────┘           │    │
+│  │                                      │                                     │    │
+│  └──────────────────────────────────────┼─────────────────────────────────────┘    │
+│                                         ▼                                            │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐    │
+│  │                      LAYER 2: EVIDENCE FUSION                               │    │
+│  │  ┌───────────────────────────────────────────────────────────────────────┐  │    │
+│  │  │              Dempster-Shafer Evidence Combination                      │  │    │
+│  │  │  • Conflict Resolution  • Temporal Decay  • Cross-Validation          │  │    │
+│  │  └───────────────────────────────────────────────────────────────────────┘  │    │
+│  │                              │                                              │    │
+│  │  Edge Classification: Validated → Discovered → Inferred → Hypothetical     │    │
+│  └──────────────────────────────┼──────────────────────────────────────────────┘    │
+│                                 ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐    │
+│  │                      LAYER 3: ATTACK GRAPH ANALYSIS                         │    │
+│  │  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐   │    │
+│  │  │ GNN Embedding │ │ Bayesian      │ │ MCTS Path     │ │ Validation    │   │    │
+│  │  │ Engine        │ │ Probability   │ │ Discovery     │ │ Rules         │   │    │
+│  │  │ Scalability   │ │ FP Reduction  │ │ Optimal Paths │ │ Hard/Soft     │   │    │
+│  │  │ 100K+ assets  │ │ 2-4% FP rate  │ │ Near-optimal  │ │ Constraints   │   │    │
+│  │  └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘   │    │
+│  └──────────────────────────────┬──────────────────────────────────────────────┘    │
+│                                 ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐    │
+│  │                      LAYER 4: LLM VALIDATION (Qwen3)                        │    │
+│  │  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐   │    │
+│  │  │ Entry Point   │ │ Exit Point    │ │ Path Realism  │ │ Attack        │   │    │
+│  │  │ Validation    │ │ Validation    │ │ Assessment    │ │ Narrative     │   │    │
+│  │  │ (Would attacker│ │ (Is target    │ │ (Technical    │ │ (Human-       │   │    │
+│  │  │  choose this?)│ │  valuable?)   │ │  feasibility) │ │  readable)    │   │    │
+│  │  └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘   │    │
+│  │                                                                              │    │
+│  │  Blended Score = 40% Algorithmic + 60% LLM                                  │    │
+│  └──────────────────────────────┬──────────────────────────────────────────────┘    │
+│                                 ▼                                                    │
+│  ┌─────────────────────────────────────────────────────────────────────────────┐    │
+│  │                      OUTPUT                                                  │    │
+│  │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────────────┐   │    │
+│  │  │ Validated   │ │ Risk        │ │ Mitigation  │ │ Attack Narratives   │   │    │
+│  │  │ Attack Paths│ │ Metrics     │ │ Recommendations│                   │   │    │
+│  │  └─────────────┘ └─────────────┘ └─────────────┘ └─────────────────────┘   │    │
+│  └─────────────────────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Project Structure
@@ -173,6 +201,12 @@ src/
 │   └── api/
 │       ├── attack-analysis/
 │       │   └── route.ts            # Hybrid attack graph API
+│       ├── llm-status/
+│       │   └── route.ts            # LLM status check
+│       ├── llm-debug/
+│       │   └── route.ts            # LLM debugging
+│       ├── test-llm/
+│       │   └── route.ts            # LLM testing
 │       └── scanner/
 │           └── route.ts            # Scanner REST API
 │
@@ -181,7 +215,7 @@ src/
 │       ├── multi-source-fusion-engine.ts   # Data source collectors + fusion
 │       ├── fused-attack-engine.ts          # Complete pipeline integration
 │       ├── enhanced-attack-engine.ts       # GNN + Bayesian + MCTS
-│       ├── llm-realism-engine.ts           # LLM validation layer
+│       ├── llm-realism-engine.ts           # LLM validation (OpenRouter/Qwen3)
 │       ├── complete-hybrid-engine.ts       # Full 4-layer integration
 │       ├── optimized-scanner.ts            # Batched SSH commands
 │       ├── high-perf-scanner.ts            # Connection pooling, host discovery
@@ -197,39 +231,45 @@ src/
 │           ├── priority-queue.ts           # Business impact ordering
 │           ├── adaptive-rate-limiter.ts    # AIMD rate control
 │           └── scan-scheduler.ts           # Cron-based scheduling
+│
+├── run-triple-comparison.mjs        # Algorithm comparison script
+└── worklog.md                       # Development worklog
 ```
 
 ## Algorithms
 
-### Multi-Source Evidence Fusion
+### Algorithm Comparison Results
 
-**Dempster-Shafer Combination:**
 ```
-m(Exists) = confidence × probability
-m(NotExists) = confidence × (1 - probability)
-m(Uncertain) = 1 - confidence
-
-K = 1 - m1(Exists) × m2(NotExists) - m1(NotExists) × m2(Exists)
-
-Belief(Exists) = Σ (m_i(Exists) × m_j(Exists)) / K
-```
-
-**Temporal Decay:**
-```
-DecayFactor = 0.5^(age / halfLife)
-AdjustedConfidence = OriginalConfidence × DecayFactor
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ OVERALL ALGORITHM COMPARISON (WITH LLM)                                      │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Metric                    │ PageRank+Dijkstra │ Old GNN+MCTS │ New GNN+MCTS │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Algorithmic Time (ms)     │ 8                  │ 406          │ 297          │
+│ Total Edges               │ 313                │ 765          │ 595          │
+│ Paths Found               │ 10                 │ 0            │ 2            │
+│ Algo Realism (%)          │ 70.2%              │ 0.0%         │ 94.2%        │
+│ LLM Realism (%)           │ 73.5%              │ N/A          │ 57.5%        │
+│ BLENDED Realism (%)       │ 72.2%              │ 0.0%         │ 72.2%        │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### GNN Embeddings
+### MCTS Path Discovery
 
-**Graph Attention Network:**
+**UCB1 Selection:**
 ```
-h_i' = σ(Σ α_ij × W × h_j)
+UCB1 = Exploitation + C × √(ln(N_parent) / N_child)
 
-where α_ij = softmax(LeakyReLU(a^T [W h_i || W h_j]))
+Exploitation = total_reward / visits
+C = √2 (exploration constant)
+```
 
-Features: Asset type, criticality, zone, internet-facing, 
-          misconfiguration counts, data sensitivity
+**Rollout Policy:**
+```
+Score = Probability × 0.5 + GNNSimilarity × 0.3 + Criticality × 0.2
+
+Reward = Criticality × PathProbability × DepthPenalty × (1 - DetectionRisk)
 ```
 
 ### Bayesian Probability Estimation
@@ -257,23 +297,6 @@ Evidence Sources:
 - Threat Intelligence: 20%
 - Historical Attacks: 15%
 - Network Flow: 10%
-```
-
-### MCTS Path Discovery
-
-**UCB1 Selection:**
-```
-UCB1 = Exploitation + C × √(ln(N_parent) / N_child)
-
-Exploitation = total_reward / visits
-C = √2 (exploration constant)
-```
-
-**Rollout Policy:**
-```
-Score = Probability × 0.5 + GNNSimilarity × 0.3 + Criticality × 0.2
-
-Reward = Criticality × PathProbability × DepthPenalty × (1 - DetectionRisk)
 ```
 
 ### Risk Score Computation
@@ -306,6 +329,13 @@ bun run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) to access the dashboard.
+
+### Run Algorithm Comparison
+
+```bash
+# Run triple algorithm comparison with LLM validation
+node run-triple-comparison.mjs
+```
 
 ## Usage Examples
 
@@ -341,53 +371,28 @@ console.log(`Generated ${result.attackPaths.length} validated attack paths`)
 console.log(`Overall risk score: ${result.riskMetrics.overallRiskScore}`)
 ```
 
-### Enhanced Attack Graph Only
+### LLM Validation with OpenRouter
 
 ```typescript
-import { EnhancedAttackGraphEngine } from '@/lib/scanners'
+import { LLMAttackAnalyzer } from '@/lib/scanners'
 
-const engine = new EnhancedAttackGraphEngine()
+const analyzer = new LLMAttackAnalyzer()
 
-const result = await engine.analyze({
-  assets: [
-    {
-      id: 'asset-1',
-      name: 'WEB-001',
-      type: 'web_server',
-      ip: '10.0.0.10',
-      zone: 'dmz',
-      criticality: 4,
-      internet_facing: true,
-      misconfigurations: [
-        { id: 'M001', title: 'RDP Exposed', severity: 'critical', ... }
-      ],
-      evidence: {
-        vulnerability_scanner: { confidence: 0.9, ... },
-        siem_alerts: { confidence: 0.7, ... }
-      }
-    }
+// Validate attack path realism
+const assessment = await analyzer.assessPathRealism({
+  nodes: [
+    { asset_name: 'WEB-001', zone: 'dmz', misconfig_title: 'SQL Injection' },
+    { asset_name: 'APP-002', zone: 'internal', misconfig_title: 'Weak Passwords' },
+    { asset_name: 'DC-001', zone: 'restricted', misconfig_title: 'Kerberoastable' }
+  ],
+  edges: [
+    { technique: 'T1021', edge_type: 'lateral', probability: 0.72 },
+    { technique: 'T1003', edge_type: 'credential_theft', probability: 0.43 }
   ]
-})
-```
+}, attackerProfile)
 
-### Multi-Source Data Collection
-
-```typescript
-import { 
-  APIDiscoverySource, 
-  PassiveNetFlowSource,
-  ActiveScanSource,
-  SidescanSource,
-  MultiSourceFusionOrchestrator 
-} from '@/lib/scanners'
-
-const orchestrator = new MultiSourceFusionOrchestrator()
-
-// Collect from all sources
-const result = await orchestrator.collectAll()
-
-// Export for attack engine
-const { assets, edges } = orchestrator.exportForAttackEngine()
+console.log(`Realism Score: ${assessment.overall_realism}`)
+console.log(`Narrative: ${assessment.narrative}`)
 ```
 
 ## API Endpoints
@@ -416,6 +421,11 @@ Content-Type: application/json
 }
 ```
 
+### LLM Status
+```bash
+GET /api/llm-status
+```
+
 ### Scanner
 ```bash
 # Start scan
@@ -433,7 +443,10 @@ GET /api/scanner?jobId=job-xxx
 
 Environment variables:
 ```bash
-# Optional - for LLM-enhanced analysis
+# OpenRouter LLM API (required for LLM validation)
+OPENROUTER_API_KEY=sk-or-v1-xxxxx
+
+# Optional - for legacy LLM integration
 OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=mistral:7b
 
@@ -441,6 +454,9 @@ OLLAMA_MODEL=mistral:7b
 CMDB_API_URL=https://servicenow.company.com/api
 NETFLOW_COLLECTOR=192.168.1.100:2055
 SIDESCAN_DATA_PATH=/data/validated-paths
+
+# Database
+DATABASE_URL=file:./db/custom.db
 ```
 
 ## Technology Stack
@@ -448,9 +464,41 @@ SIDESCAN_DATA_PATH=/data/validated-paths
 - **Frontend**: Next.js 15, React 19, Tailwind CSS
 - **Backend**: Next.js API Routes
 - **Graph**: Custom GNN implementation with attention mechanisms
-- **AI/ML**: z-ai-web-dev-sdk for LLM integration
+- **AI/ML**: OpenRouter API (Qwen3 Next 80B A3B Instruct)
 - **Evidence Fusion**: Dempster-Shafer theory implementation
 - **Runtime**: Bun
+
+## Sample Output
+
+```
+================================================================================
+TOP 3 ATTACK PATHS - WITH LLM NARRATIVES
+================================================================================
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ PATH #1 COMPARISON (LLM Enhanced)                                            │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ PageRank + Dijkstra (+ LLM):                                                 │
+│   Path: WEB-SERVER-01 → APP-SERVER-02 → DOMAIN-CTRL-05                       │
+│   Depth: 3 nodes                                                             │
+│   Algo Realism: 72.9%                                                        │
+│   LLM Realism: 85.0%                                                         │
+│   BLENDED: 80.2%                                                             │
+│   📝 An APT initiates attack by exploiting SQL injection on the DMZ web     │
+│      server, gaining shell access. They pivot to the internal app server    │
+│      using harvested credentials and perform Kerberoasting to gain Domain   │
+│      Admin access.                                                          │
+│                                                                              │
+│ New GNN+Bayesian+MCTS (+ LLM):                                               │
+│   Path: WEB-SERVER-02 → WEB-SERVER-09 → DOMAIN-CTRL-05                       │
+│   Depth: 3 nodes                                                             │
+│   Algo Realism: 95.1%                                                        │
+│   LLM Realism: 75.0%                                                         │
+│   BLENDED: 83.0%                                                             │
+│   Detection Risk: 24.0%                                                      │
+│   💡 Suggestions: Replace 'default credentials' on domain controller        │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
 
 ## Research References
 
@@ -469,4 +517,4 @@ MIT License
 
 ---
 
-**Version 3.0.0** - Built for enterprise security teams who need actionable vulnerability intelligence at scale with state-of-the-art AI/ML techniques.
+**Version 4.0.0** - Built for enterprise security teams who need actionable vulnerability intelligence at scale with state-of-the-art AI/ML techniques and LLM validation via OpenRouter/Qwen3.
