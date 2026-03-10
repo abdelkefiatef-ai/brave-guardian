@@ -979,13 +979,13 @@ Respond with JSON:
       // CROWN JEWEL RULE: Stop at crown jewels using LLM-cached result
       // Once we compromise the crown jewels, the attack is complete
       if (currentAsset && this.isCrownJewelCached(currentAsset)) {
-        reward = this.computeTerminalReward(node, currentAsset)
+        reward = this.computeTerminalReward(node, currentAsset, assetMap)
         break
       }
       
       // Check if reached target
       if (targetAssets.has(current)) {
-        reward = this.computeTerminalReward(node, assetMap.get(current)!)
+        reward = this.computeTerminalReward(node, assetMap.get(current)!, assetMap)
         break
       }
       
@@ -1033,40 +1033,74 @@ Respond with JSON:
     return reward
   }
 
-  private computeTerminalReward(node: MCTSNode, targetAsset: EnhancedAsset): number {
-    // Base reward from target criticality
+  private computeTerminalReward(node: MCTSNode, targetAsset: EnhancedAsset, assetMap: Map<string, EnhancedAsset>): number {
+    // 1. Base reward from target criticality
     const criticalityReward = targetAsset.criticality / 5
     
-    // Path probability reward
+    // 2. Path probability reward (keep this to ensure paths are actually viable)
     let pathProbability = 1.0
     let current: MCTSNode | null = node
+    
+    // Track kill chain phases to reward completeness
+    const phasesHit = new Set<string>()
+    let pathLength = 0
+    
     while (current) {
       pathProbability *= current.probability
+      
+      // Extract the phase from the misconfiguration (assuming it's mapped in the category)
+      const asset = assetMap.get(current.asset_id)
+      const misconfig = asset?.misconfigurations.find(m => m.id === current!.misconfig_id)
+      if (misconfig) {
+        phasesHit.add(misconfig.category)
+      }
+      
+      pathLength++
       current = current.parent
     }
     
-    // Depth penalty (shorter paths are better for attacker)
-    const depthPenalty = Math.exp(-0.1 * node.depth)
+    // 3. KILL CHAIN COMPLETENESS REWARD (The Fix)
+    // Instead of penalizing depth, we reward paths that hit multiple distinct phases.
+    // A realistic attack hits 3-5 distinct phases.
+    const phaseCompleteness = Math.min(phasesHit.size / 5, 1.0)
+    const killChainBonus = 1.0 + (phaseCompleteness * 1.5) // Up to 150% bonus for a full kill chain
     
-    // Detection risk (lower is better for attacker)
-    const detectionRisk = this.estimateDetectionRisk(node)
+    // 4. IDEAL LENGTH MODIFIER
+    // Real attacks are usually 4-7 steps. We penalize paths that are too short (< 3) 
+    // or absurdly long (> 10), but keep 4-7 as the "sweet spot".
+    let lengthModifier = 1.0
+    if (pathLength < 3) lengthModifier = 0.5      // Too short, likely unrealistic
+    else if (pathLength >= 4 && pathLength <= 7) lengthModifier = 1.2 // The sweet spot
+    else if (pathLength > 10) lengthModifier = 0.7 // Too noisy
     
-    // Combined reward
-    return criticalityReward * pathProbability * depthPenalty * (1 - detectionRisk)
+    // 5. Detection risk (adjusted to be more realistic)
+    const detectionRisk = this.estimateDetectionRisk(node, assetMap)
+    
+    // Combined reward: Criticality * Probability * KillChainBonus * LengthModifier * Stealth
+    return criticalityReward * pathProbability * killChainBonus * lengthModifier * (1 - detectionRisk)
   }
 
-  private estimateDetectionRisk(node: MCTSNode): number {
-    // Estimate probability of detection based on path characteristics
+  private estimateDetectionRisk(node: MCTSNode, assetMap: Map<string, EnhancedAsset>): number {
     let risk = 0
     let current: MCTSNode | null = node
     
     while (current) {
-      // Each step adds detection risk
-      risk += 0.05
+      const asset = assetMap.get(current.asset_id)
+      const misconfig = asset?.misconfigurations.find(m => m.id === current!.misconfig_id)
       
-      // Internet-facing entry points have higher detection
+      // Realistic detection: "Loud" exploits (RCE) have high detection risk.
+      // "Stealthy" actions (Credential theft, Lateral movement) have lower detection risk.
+      if (misconfig?.severity === 'critical') {
+        risk += 0.08 // Loud exploits trigger EDR/IDS
+      } else if (misconfig?.category.includes('credential') || misconfig?.category.includes('lateral')) {
+        risk += 0.02 // Living off the land is stealthier
+      } else {
+        risk += 0.04 // Standard noise
+      }
+      
+      // Internet-facing entry points have higher detection (WAFs, external monitoring)
       if (current.depth === 0) {
-        risk += 0.1
+        risk += 0.15
       }
       
       current = current.parent
