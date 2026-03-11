@@ -89,6 +89,9 @@ interface AttackPath {
   narrative: string
   business_impact: string
   kill_chain: string[]
+  pattern_signature: string
+  pattern_label: string
+  pattern_rank: number
 }
 
 interface AnalysisResult {
@@ -801,12 +804,16 @@ function PathsView({ result }: { result: AnalysisResult | null }) {
               <button key={p.path_id} onClick={() => setSel(i)}
                 className={`w-full text-left p-4 hover:bg-[#161b22] transition-colors ${sel === i ? 'bg-red-950/10 border-l-2 border-red-600 pl-[14px]' : ''}`}>
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-mono font-bold text-slate-300">PATH-{String(i+1).padStart(2,"0")}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono font-bold text-slate-300">PATTERN-{String((p.pattern_rank || i+1)).padStart(2,"0")}</span>
+                    <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-violet-950/40 border border-violet-900 text-violet-400">unique</span>
+                  </div>
                   <span className={`text-xs font-mono px-2 py-0.5 rounded border ${risk > 0.5 ? 'text-red-400 border-red-900 bg-red-950/30' : 'text-amber-400 border-amber-900 bg-amber-950/30'}`}>
                     {Math.round(risk * 100)}%
                   </span>
                 </div>
-                <div className="text-xs text-slate-600 font-mono mb-2">{p.nodes.length} steps · {[...new Set(p.nodes.map(n => n.asset_id))].length} assets</div>
+                <div className="text-xs text-slate-500 font-mono mb-1.5 leading-snug">{p.pattern_label || `${p.nodes[0]?.asset_type} → ${p.nodes[p.nodes.length-1]?.asset_type}`}</div>
+                <div className="text-xs text-slate-700 font-mono mb-2">{p.nodes.length} steps · {[...new Set(p.nodes.map(n => n.asset_id))].length} assets</div>
                 <RiskBar value={risk} />
                 <div className="flex flex-wrap gap-1 mt-2">
                   {cats.map(c => (
@@ -835,9 +842,13 @@ function PathsView({ result }: { result: AnalysisResult | null }) {
             {/* Header */}
             <div className="px-5 py-4 border-b border-[#21262d] flex items-center justify-between shrink-0">
               <div>
-                <div className="font-mono font-bold text-slate-100">PATH-{String(sel !== null ? sel + 1 : 1).padStart(2, "0")} — {path.nodes[0]?.asset_name} → {path.nodes[path.nodes.length-1]?.asset_name}</div>
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="font-mono font-bold text-slate-100">PATTERN-{String((path.pattern_rank || (sel !== null ? sel + 1 : 1))).padStart(2, "0")}</span>
+                  <span className="text-xs font-mono px-2 py-0.5 rounded bg-violet-950/40 border border-violet-900 text-violet-400">unique attack pattern</span>
+                </div>
+                <div className="text-xs text-slate-400 font-mono mt-0.5 mb-0.5">{path.pattern_label || `${path.nodes[0]?.asset_name} → ${path.nodes[path.nodes.length-1]?.asset_name}`}</div>
                 <div className="text-xs text-slate-600 font-mono mt-0.5">
-                  {path.nodes.length} steps · {[...new Set(path.nodes.map(n => n.asset_id))].length} unique assets
+                  {path.nodes[0]?.asset_name} → {path.nodes[path.nodes.length-1]?.asset_name} · {path.nodes.length} steps · {[...new Set(path.nodes.map(n => n.asset_id))].length} unique assets
                 </div>
               </div>
               <div className="flex gap-5 text-xs font-mono text-right">

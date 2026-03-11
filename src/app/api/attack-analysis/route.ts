@@ -99,6 +99,9 @@ interface AttackPath {
   narrative: string
   business_impact: string
   kill_chain: string[]
+  pattern_signature: string
+  pattern_label: string
+  pattern_rank: number
 }
 
 interface AnalysisResult {
@@ -467,7 +470,10 @@ export async function POST(request: NextRequest) {
         detection_risk: path.detection_probability,
         final_risk_score: Math.min(1, path.realism_score),
         kill_chain: path.kill_chain_phases,
-        business_impact_score: path.business_impact
+        business_impact_score: path.business_impact,
+        pattern_signature: path.pattern_signature,
+        pattern_label: path.pattern_label,
+        pattern_rank: path.pattern_rank
       }
     })
 
@@ -495,7 +501,10 @@ export async function POST(request: NextRequest) {
       final_risk_score: rp.final_risk_score,
       narrative: narrativeResults[i].narrative,
       business_impact: narrativeResults[i].business_impact,
-      kill_chain: rp.kill_chain
+      kill_chain: rp.kill_chain,
+      pattern_signature: rp.pattern_signature,
+      pattern_label: rp.pattern_label,
+      pattern_rank: rp.pattern_rank
     }))
     
     // FIX: Return shape matching frontend AnalysisResult interface exactly

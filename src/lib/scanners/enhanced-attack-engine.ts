@@ -131,6 +131,10 @@ export interface RealisticAttackPath {
   kill_chain_phases: string[]
   required_capabilities: string[]
   timeline_estimate: string
+  // Pattern diversity
+  pattern_signature: string  // structural fingerprint for dedup
+  pattern_label: string      // human-readable attack pattern name
+  pattern_rank: number       // 1 = highest-scoring unique pattern
 }
 
 export interface EntryPoint {
@@ -494,9 +498,7 @@ class MCTSPathDiscoveryEngine {
     const crowns = Array.from(this.cjCache.values()).filter(Boolean).length
     console.log(`[MCTS] ${crowns} crown jewels found`)
 
-    const paths: RealisticAttackPath[] = []
-
-    // OPTIMISATION: cap entry points at top-10 by criticality × misconfig severity
+    // Cap entry points at top-10 by criticality × misconfig severity
     const scored = entryPoints
       .map(ep => {
         const a = assetMap.get(ep.asset_id)!
@@ -508,7 +510,22 @@ class MCTSPathDiscoveryEngine {
       .slice(0, 10)
       .map(x => x.ep)
 
+    // ── Pattern-diversity state ───────────────────────────────────────────────
+    // seenPatterns: signature → best path representing that pattern
+    // patternPenalty: signature → cumulative penalty applied to reward shaping
+    // Goal: collect exactly TARGET_PATTERNS unique structural patterns,
+    //       then stop — no need to run remaining entry points.
+    const TARGET_PATTERNS = 5
+    const seenPatterns  = new Map<string, RealisticAttackPath>()
+    const patternPenalty = new Map<string, number>()
+
     for (const entry of scored) {
+      // Early exit: we already have enough distinct patterns
+      if (seenPatterns.size >= TARGET_PATTERNS) {
+        console.log(`[MCTS] ${TARGET_PATTERNS} unique patterns found — skipping remaining entry points`)
+        break
+      }
+
       const root: MCTSNode = {
         id: `${entry.asset_id}:${entry.misconfig_id}`,
         asset_id: entry.asset_id, misconfig_id: entry.misconfig_id,
@@ -521,16 +538,63 @@ class MCTSPathDiscoveryEngine {
       for (let sim = 0; sim < this.SIMS; sim++) {
         const leaf  = this.select(root)
         const child = this.expand(leaf, adj, assetMap)
-        const rew   = this.simulate(child, targetAssets, adj, assetMap)
+        let   rew   = this.simulate(child, targetAssets, adj, assetMap)
+
+        // ── Reward shaping: penalise paths toward already-saturated patterns ──
+        // We estimate the pattern of the current rollout from the path so far.
+        // If it matches a known pattern we dampen the reward, steering MCTS to
+        // explore structurally different corridors in the remaining simulations.
+        if (rew > 0 && child.path_from_root.length >= 2) {
+          const entryA  = assetMap.get(child.path_from_root[0])
+          const targetA = assetMap.get(child.path_from_root[child.path_from_root.length - 1])
+          if (entryA && targetA) {
+            const roughSig = `${entryA.type}:${entryA.zone}|${targetA.type}:${targetA.zone}`
+            const penalty  = patternPenalty.get(roughSig) ?? 0
+            rew = rew * Math.max(0.05, 1 - penalty)   // at most 95% reduction
+          }
+        }
+
         this.backpropagate(child, rew)
       }
 
-      paths.push(...this.extractBestPaths(root, targetAssets, assetMap))
+      // Extract candidate paths from this tree
+      const candidates = this.extractBestPaths(root, targetAssets, assetMap)
+
+      // Stamp each path with its canonical structural signature
+      for (const p of candidates) {
+        p.pattern_signature = this.patternSignature(p, assetMap)
+        p.pattern_label     = this.patternLabel(p.pattern_signature)
+      }
+
+      // Register new patterns; update penalty for known ones
+      for (const p of candidates.sort((a, b) => b.realism_score - a.realism_score)) {
+        const sig = p.pattern_signature
+        if (!seenPatterns.has(sig)) {
+          // New pattern — register it
+          seenPatterns.set(sig, p)
+          // Initialise penalty so future sims from *other* entry points deprioritise it
+          patternPenalty.set(sig, 0.4)
+          console.log(`[MCTS] New pattern #${seenPatterns.size}: ${p.pattern_label}`)
+          if (seenPatterns.size >= TARGET_PATTERNS) break
+        } else {
+          // Known pattern — bump its penalty to further suppress exploration
+          const cur = patternPenalty.get(sig) ?? 0
+          patternPenalty.set(sig, Math.min(cur + 0.15, 0.95))
+          // Replace representative if this instance scores better
+          const existing = seenPatterns.get(sig)!
+          if (p.realism_score > existing.realism_score) {
+            seenPatterns.set(sig, p)
+          }
+        }
+      }
     }
 
-    return paths
+    // Assign final pattern_rank and return top-5 unique patterns, best-first
+    const uniquePaths = Array.from(seenPatterns.values())
       .sort((a, b) => b.realism_score - a.realism_score)
-      .slice(0, 10)
+
+    uniquePaths.forEach((p, i) => { p.pattern_rank = i + 1 })
+    return uniquePaths
   }
 
   // ── UCB1 Selection ──────────────────────────────────────────────────────────
@@ -750,6 +814,12 @@ class MCTSPathDiscoveryEngine {
       }
     }
 
+    // pattern_signature and pattern_label are filled in by discoverPaths
+    // after the full assetMap is available; set placeholders here.
+    const entryNode  = pathNodes[0]
+    const targetNode = pathNodes[pathNodes.length - 1]
+    const edgePart   = edges.map(e => e.edge_type).join('→')
+    const sig = `${entryNode.asset_id}:${entryNode.zone}|${edgePart}|${targetNode.asset_id}:${targetNode.zone}`
     return {
       path_id: `path-${nodes[0].asset_id.slice(-6)}-${nodes[nodes.length - 1].asset_id.slice(-6)}-${Date.now()}`,
       nodes: pathNodes, edges,
@@ -762,7 +832,36 @@ class MCTSPathDiscoveryEngine {
       kill_chain_phases: this.killChainPhases(edges),
       required_capabilities: this.capabilities(edges),
       timeline_estimate: `${nodes.length * 4}–${nodes.length * 8} hours`,
+      pattern_signature: sig,
+      pattern_label: '',   // filled by discoverPaths
+      pattern_rank: 0,     // filled by discoverPaths
     }
+  }
+
+  // ── Pattern diversity helpers ─────────────────────────────────────────────
+
+  // Structural fingerprint: entry_type:entry_zone | e1→e2→... | target_type:target_zone
+  // Two paths share a pattern iff this string matches — irrespective of specific assets.
+  patternSignature(path: RealisticAttackPath, assetMap: Map<string, EnhancedAsset>): string {
+    const entry  = path.nodes[0]
+    const target = path.nodes[path.nodes.length - 1]
+    const ea     = assetMap.get(entry.asset_id)
+    const ta     = assetMap.get(target.asset_id)
+    const entryPart  = `${ea?.type ?? entry.asset_id}:${entry.zone}`
+    const targetPart = `${ta?.type ?? target.asset_id}:${target.zone}`
+    const edgePart   = path.edges.map(e => e.edge_type).join('→')
+    return `${entryPart}|${edgePart}|${targetPart}`
+  }
+
+  // Human-readable label derived from the signature
+  patternLabel(sig: string): string {
+    const [entryPart, edgePart, targetPart] = sig.split('|')
+    const entryType  = entryPart.split(':')[0].replace(/_/g, ' ')
+    const targetType = targetPart.split(':')[0].replace(/_/g, ' ')
+    const targetZone = targetPart.split(':')[1] ?? ''
+    const techniques = edgePart.split('→').map(t => t.replace(/_/g, ' '))
+    const uniqueTech = [...new Set(techniques)]
+    return `${entryType} → ${uniqueTech.join(' + ')} → ${targetType} [${targetZone}]`
   }
 
   private realismScore(nodes: MCTSNode[], edges: BayesianEdge[], prob: number): number {
