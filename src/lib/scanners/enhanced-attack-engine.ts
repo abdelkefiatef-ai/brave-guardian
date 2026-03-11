@@ -1041,29 +1041,64 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
     type E = { source: string; target: string; technique: string; type: BayesianEdge['edge_type'] }
     const edges: E[] = []
 
+    // Zones that represent a direct internet exposure boundary
+    const PERIMETER_ZONES = new Set(['dmz', 'internet'])
+    // Zones that are "restricted" — require explicit privilege escalation to enter
+    const RESTRICTED_ZONES = new Set(['restricted', 'pci', 'hipaa', 'security'])
+
     for (const src of assets) {
       for (const tgt of assets) {
         if (src.id === tgt.id) continue
-        if (!zoneCanReach(src.zone, tgt.zone)) continue   // skip unreachable pairs
+        if (!zoneCanReach(src.zone, tgt.zone)) continue
 
-        // Internet-facing initial access
-        if (src.internet_facing) {
+        // ── Initial Access ────────────────────────────────────────────────────
+        // Represents exploitation of an internet-exposed service.
+        // An internet-facing asset can only gain Initial Access to assets within
+        // its OWN zone — the attacker lands on the compromised host itself, not
+        // magically in an internal zone.  Cross-zone movement always requires a
+        // subsequent technique (lateral, credential theft, privesc).
+        if (src.internet_facing && tgt.zone === src.zone) {
           edges.push({ source: src.id, target: tgt.id, technique: 'Initial Access', type: 'exploit' })
         }
-        // Same-zone lateral movement
-        if (src.zone === tgt.zone) {
+
+        // ── Lateral Movement ──────────────────────────────────────────────────
+        // Same-zone host-to-host movement (SMB, WMI, PsExec, etc.).
+        // Also allowed from DMZ into the first internal tier (prod-web / corp)
+        // — this models an attacker pivoting off a compromised perimeter host.
+        const dmzToFirstTier = PERIMETER_ZONES.has(src.zone) && ['prod-web', 'corp'].includes(tgt.zone)
+        if (src.zone === tgt.zone || dmzToFirstTier) {
           edges.push({ source: src.id, target: tgt.id, technique: 'Lateral Movement', type: 'lateral' })
         }
-        // Privilege escalation toward restricted zones
-        if (['restricted', 'pci', 'hipaa', 'security'].includes(tgt.zone)) {
-          edges.push({ source: src.id, target: tgt.id, technique: 'Privilege Escalation Path', type: 'privilege_escalation' })
-        }
-        // Domain credential theft
-        if (src.domain_joined && tgt.domain_joined) {
+
+        // ── Credential Theft ──────────────────────────────────────────────────
+        // Domain-joined assets can harvest and reuse credentials to move to other
+        // domain-joined assets — valid across zone boundaries that are reachable,
+        // but NOT directly from a perimeter zone into a deep internal zone.
+        // The attacker must already have an internal foothold (non-perimeter src).
+        if (
+          src.domain_joined && tgt.domain_joined &&
+          !PERIMETER_ZONES.has(src.zone)               // must have internal foothold first
+        ) {
           edges.push({ source: src.id, target: tgt.id, technique: 'Credential Theft', type: 'credential_theft' })
         }
-        // GNN similarity-based edges
-        if (this.gnn.computeSimilarity(src.id, tgt.id) > 0.7) {
+
+        // ── Privilege Escalation ──────────────────────────────────────────────
+        // Moving into a restricted zone requires explicit escalation.
+        // The source must already be in an adjacent reachable zone — not perimeter.
+        if (
+          RESTRICTED_ZONES.has(tgt.zone) &&
+          !PERIMETER_ZONES.has(src.zone)               // can't privesc from internet directly
+        ) {
+          edges.push({ source: src.id, target: tgt.id, technique: 'Privilege Escalation Path', type: 'privilege_escalation' })
+        }
+
+        // ── GNN Similarity (opportunistic targeting) ──────────────────────────
+        // Only between assets that are already in adjacent / reachable internal zones,
+        // not across the internet boundary.
+        if (
+          this.gnn.computeSimilarity(src.id, tgt.id) > 0.7 &&
+          !PERIMETER_ZONES.has(src.zone)
+        ) {
           edges.push({ source: src.id, target: tgt.id, technique: 'Similar Asset Targeting', type: 'lateral' })
         }
       }
