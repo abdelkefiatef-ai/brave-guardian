@@ -266,20 +266,26 @@ class GNNEmbeddingEngine {
     const sev = { critical: 0, high: 0, medium: 0, low: 0 }
     for (const m of asset.misconfigurations) sev[m.severity]++
 
+    // All 18 zones get their own one-hot dimension so the GNN learns
+    // genuine zone-level structural separation — mgmt and corp are distinct
+    // embedding regions, not collapsed into the same sparse encoding.
+    const ALL_ZONES = [
+      'dmz','prod-web','prod-app','prod-db','dev-web','dev-app','dev-db',
+      'staging','corp','corp-wifi','restricted','pci','hipaa',
+      'mgmt','security','cloud-prod','cloud-dev','dr',
+    ]
     const f: number[] = [
-      ...TYPES.map(t => asset.type === t ? 1 : 0),
-      asset.criticality / 5,
-      asset.zone === 'dmz'        ? 1 : 0,
-      asset.zone === 'internal'   ? 1 : 0,
-      asset.zone === 'restricted' ? 1 : 0,
-      asset.internet_facing ? 1 : 0,
-      asset.domain_joined   ? 1 : 0,
-      Math.min(sev.critical / 3, 1),
+      ...TYPES.map(t => asset.type === t ? 1 : 0),            // 10 dims: asset type
+      asset.criticality / 5,                                   //  1 dim:  criticality
+      ...ALL_ZONES.map(z => asset.zone === z ? 1 : 0),         // 18 dims: zone identity (one-hot)
+      asset.internet_facing ? 1 : 0,                           //  1 dim:  internet exposure
+      asset.domain_joined   ? 1 : 0,                           //  1 dim:  AD membership
+      Math.min(sev.critical / 3, 1),                           //  4 dims: vuln severity distribution
       Math.min(sev.high     / 5, 1),
       Math.min(sev.medium   / 10, 1),
       Math.min(sev.low      / 15, 1),
-      SENSITIVITY[asset.data_sensitivity ?? 'user_data'] ?? 0.5,
-    ]
+      SENSITIVITY[asset.data_sensitivity ?? 'user_data'] ?? 0.5, // 1 dim: data sensitivity
+    ]  // total: 36 meaningful dims; padded to DIM=128
     while (f.length < this.DIM) f.push(0)
     return f.slice(0, this.DIM)
   }
@@ -341,6 +347,24 @@ class GNNEmbeddingEngine {
   getEmbedding(id: string): number[] | undefined { return this.nodeEmbeddings.get(id) }
 }
 
+// ─── ZONE DISTANCE ───────────────────────────────────────────────────────────
+// BFS hop-count over ZONE_REACH — same zone = 0, adjacent = 1, two hops = 2, etc.
+// Used by Bayesian prior as a continuous reachability penalty derived from
+// network topology, not from hardcoded technique rules.
+function zoneDistance(a: string, b: string): number {
+  if (a === b) return 0
+  const visited = new Set([a])
+  const queue = [[a, 0]] as [string, number][]
+  while (queue.length) {
+    const [cur, d] = queue.shift()!
+    for (const next of (ZONE_REACH[cur] ?? [])) {
+      if (next === b) return d + 1
+      if (!visited.has(next)) { visited.add(next); queue.push([next, d + 1]) }
+    }
+  }
+  return 99  // unreachable (shouldn't happen after zoneCanReach guard)
+}
+
 // ─── LAYER 2: BAYESIAN PROBABILITY ENGINE ────────────────────────────────────
 
 class BayesianProbabilityEngine {
@@ -390,16 +414,28 @@ class BayesianProbabilityEngine {
     }
     let p = base[type]
 
-    // Adjust from asset features only — no hardcoded zone names.
-    // internet_facing → attacker already has network access to this asset
+    // ── Zone-distance penalty (topology-derived, no hardcoded zone names) ──────
+    // BFS hop-count over ZONE_REACH tells us how many network segments separate
+    // src and tgt. Same zone → no penalty. Each additional hop cuts probability
+    // by 40%, reflecting the real cost of traversing firewall / ACL boundaries.
+    // This is what makes FW[mgmt] → WS[corp] score low: they are 2 hops apart
+    // (mgmt → corp is one ZONE_REACH step, but the attacker is in mgmt, not corp)
+    // and the technique evidence on a corp workstation is weak from a mgmt src.
+    const dist = zoneDistance(src.zone, tgt.zone)
+    p *= Math.pow(0.60, dist)   // 0 hops → ×1.00, 1 hop → ×0.60, 2 hops → ×0.36
+
+    // ── Asset-feature uplifts (no zone names) ─────────────────────────────────
+    // internet_facing src: attacker already reached this host from outside
     if (src.internet_facing) p *= 1.4
-    // High criticality targets are more actively sought
+    // High-criticality target: more likely to be actively sought
     p *= (1 + tgt.criticality * 0.08)
-    // GNN embedding similarity — structurally similar assets share attack surface
-    p *= (1 + Math.max(0, gnnSimilarity) * 0.5)
-    // domain_joined pair — AD attack paths are well-established
+    // GNN similarity: assets with similar embeddings share attack surface —
+    // but only when they are also zone-close (handled by dist penalty above).
+    // A high similarity across distant zones is a GNN artefact, not a signal.
+    if (dist <= 1) p *= (1 + Math.max(0, gnnSimilarity) * 0.3)
+    // Domain-joined pair: AD credential paths are well-established
     if (src.domain_joined && tgt.domain_joined) p *= 1.2
-    // Exploit-available misconfigs on target raise all technique priors
+    // Exploit-available critical misconfigs raise all technique priors
     const exploitable = tgt.misconfigurations.filter(m => m.exploit_available && m.severity === 'critical').length
     p *= (1 + exploitable * 0.15)
 
