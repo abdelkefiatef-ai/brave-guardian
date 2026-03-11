@@ -18,10 +18,12 @@
 import { EventEmitter } from 'events'
 // OpenRouter — Qwen3-235B-A22B (no fallback)
 async function callQwen(prompt: string, maxTokens = 300): Promise<string> {
+  const key = process.env.OPENROUTER_API_KEY
+  if (!key) throw new Error('OPENROUTER_API_KEY env var not set')
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer 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`,
+      'Authorization': `Bearer ${key}`,
       'Content-Type': 'application/json',
       'HTTP-Referer': 'https://brave-guardian.vercel.app',
       'X-Title': 'Brave Guardian'
@@ -931,14 +933,13 @@ Respond with JSON:
       if (jsonMatch) {
         const result = JSON.parse(jsonMatch[0])
         const isCrownJewel = result.is_crown_jewel === true
-        
-        // Cache the result
         this.crownJewelCache.set(cacheKey, isCrownJewel)
-        
-        console.log(`[CROWN JEWEL LLM] ${asset.name}: ${isCrownJewel ? '👑 YES' : '❌ NO'} - ${result.reasoning || result.attacker_value}`)
-        
+        console.log(`[CROWN JEWEL] ${asset.name}: ${isCrownJewel ? '👑 YES' : '❌ NO'} - ${result.reasoning || result.attacker_value}`)
         return isCrownJewel
       }
+      // Qwen3 responded but JSON was unparseable — treat as not crown jewel
+      this.crownJewelCache.set(cacheKey, false)
+      return false
     } catch (error) {
       console.error('[CROWN JEWEL] Qwen3 error:', error)
       throw error
@@ -985,12 +986,12 @@ Respond with JSON:
     const visited = new Set(node.path_from_root)
     let reward = 0
     
-    // Random rollout
-    while (depth < this.maxDepth && cumulativeProbability > 0.01) {
+    // Rollout — stop at maxDepth only; do NOT use probability as a cutoff
+    // (probability compounding already heavily penalizes long paths; no need to double-penalize)
+    while (depth < this.maxDepth) {
       const currentAsset = assetMap.get(current)
       
       // CROWN JEWEL RULE: Stop at crown jewels using LLM-cached result
-      // Once we compromise the crown jewels, the attack is complete
       if (currentAsset && this.isCrownJewelCached(currentAsset)) {
         reward = this.computeTerminalReward(node, currentAsset, assetMap)
         break
@@ -1007,7 +1008,7 @@ Respond with JSON:
       
       if (unvisitedNeighbors.length === 0) break
       
-      // Greedy selection based on GNN similarity and Bayesian probability
+      // Selection: prioritise tier escalation and target proximity over raw probability
       let bestNeighbor = ''
       let bestScore = -1
       
@@ -1016,10 +1017,12 @@ Respond with JSON:
         const prob = edge?.posterior_probability || 0.1
         const gnnSim = this.gnnEngine.computeSimilarity(current, neighbor)
         const asset = assetMap.get(neighbor)
-        const criticality = asset?.criticality || 1
+        const criticality = (asset?.criticality || 1) / 5
+        // Reward moving toward targets/crown-jewels
+        const isTarget = targetAssets.has(neighbor) || (asset ? this.isCrownJewelCached(asset) : false)
+        const targetBonus = isTarget ? 0.3 : 0
         
-        // Combined score: probability + similarity + criticality
-        const score = prob * 0.5 + gnnSim * 0.3 + (criticality / 5) * 0.2
+        const score = prob * 0.35 + gnnSim * 0.2 + criticality * 0.15 + targetBonus
         if (score > bestScore) {
           bestScore = score
           bestNeighbor = neighbor
@@ -1047,50 +1050,48 @@ Respond with JSON:
   }
 
   private computeTerminalReward(node: MCTSNode, targetAsset: EnhancedAsset, assetMap: Map<string, EnhancedAsset>): number {
-    // 1. Base reward from target criticality
+    // 1. Base reward from target criticality (0–1)
     const criticalityReward = targetAsset.criticality / 5
-    
-    // 2. Path probability reward (keep this to ensure paths are actually viable)
-    let pathProbability = 1.0
-    let current: MCTSNode | null = node
-    
-    // Track kill chain phases to reward completeness
+
+    // 2. Walk the path to gather stats — do NOT multiply into reward
+    //    Probability compounds naturally through MCTS backpropagation;
+    //    injecting it here creates the triple-penalty problem.
     const phasesHit = new Set<string>()
     let pathLength = 0
-    
+    let minEdgeProb = 1.0
+    let current: MCTSNode | null = node
+
     while (current) {
-      pathProbability *= current.probability
-      
-      // Extract the phase from the misconfiguration (assuming it's mapped in the category)
       const asset = assetMap.get(current.asset_id)
       const misconfig = asset?.misconfigurations.find(m => m.id === current!.misconfig_id)
-      if (misconfig) {
-        phasesHit.add(misconfig.category)
-      }
-      
+      if (misconfig) phasesHit.add(misconfig.category)
+      minEdgeProb = Math.min(minEdgeProb, current.probability)
       pathLength++
       current = current.parent
     }
-    
-    // 3. KILL CHAIN COMPLETENESS REWARD (The Fix)
-    // Instead of penalizing depth, we reward paths that hit multiple distinct phases.
-    // A realistic attack hits 3-5 distinct phases.
+
+    // 3. Kill chain completeness bonus
+    //    5 distinct phases (network, authentication, authorization, service, encryption/logging)
+    //    → up to +150% bonus on top of base reward
     const phaseCompleteness = Math.min(phasesHit.size / 5, 1.0)
-    const killChainBonus = 1.0 + (phaseCompleteness * 1.5) // Up to 150% bonus for a full kill chain
-    
-    // 4. IDEAL LENGTH MODIFIER
-    // Real attacks are usually 4-7 steps. We penalize paths that are too short (< 3) 
-    // or absurdly long (> 10), but keep 4-7 as the "sweet spot".
-    let lengthModifier = 1.0
-    if (pathLength < 3) lengthModifier = 0.5      // Too short, likely unrealistic
-    else if (pathLength >= 4 && pathLength <= 7) lengthModifier = 1.2 // The sweet spot
-    else if (pathLength > 10) lengthModifier = 0.7 // Too noisy
-    
-    // 5. Detection risk (adjusted to be more realistic)
-    const detectionRisk = this.estimateDetectionRisk(node, assetMap)
-    
-    // Combined reward: Criticality * Probability * KillChainBonus * LengthModifier * Stealth
-    return criticalityReward * pathProbability * killChainBonus * lengthModifier * (1 - detectionRisk)
+    const killChainBonus = 1.0 + phaseCompleteness * 1.5
+
+    // 4. Ideal length modifier — 4–7 nodes is the sweet spot
+    //    Short paths (<4) are unrealistic smash-and-grab; very long paths (>10) are noisy
+    let lengthModifier: number
+    if (pathLength < 4)                       lengthModifier = 0.4  // penalise short
+    else if (pathLength >= 4 && pathLength <= 7) lengthModifier = 1.3  // sweet spot bonus
+    else if (pathLength <= 10)                lengthModifier = 1.0  // acceptable
+    else                                      lengthModifier = 0.7  // too long
+
+    // 5. Stealth factor — use minimum edge probability as a single light weight
+    //    (instead of multiplying ALL probabilities and crushing the score)
+    const stealthFactor = 0.5 + minEdgeProb * 0.5  // ranges 0.5–1.0
+
+    // 6. Detection risk (capped at 0.5 so it never zeroes the reward)
+    const detectionRisk = Math.min(this.estimateDetectionRisk(node, assetMap), 0.5)
+
+    return criticalityReward * killChainBonus * lengthModifier * stealthFactor * (1 - detectionRisk)
   }
 
   private estimateDetectionRisk(node: MCTSNode, assetMap: Map<string, EnhancedAsset>): number {
@@ -1149,7 +1150,7 @@ Respond with JSON:
       const isTerminal = nodeAsset && this.isCrownJewelCached(nodeAsset)
       
       // Valid end point: either it's in targetAssets OR it's a crown jewel (LLM-determined)
-      if ((isTarget || isTerminal) && path.length >= 3) {
+      if ((isTarget || isTerminal) && path.length >= 4) {
         // Determine minimum required path length based on zone transitions
         const minRequiredLength = this.getMinPathLength(path, assetMap)
         

@@ -192,10 +192,11 @@ function convertToEnhancedAsset(asset: Asset): EnhancedAsset {
 // QWEN3 VIA OPENROUTER — NO FALLBACK
 // ============================================================================
 
-const OPENROUTER_KEY = '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'
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY!
 const QWEN_MODEL = 'qwen/qwen3-235b-a22b'
 
 async function callQwen(prompt: string, maxTokens = 400): Promise<string> {
+  if (!OPENROUTER_KEY) throw new Error('OPENROUTER_API_KEY env var not set')
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
