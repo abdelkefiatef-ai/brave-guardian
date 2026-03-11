@@ -355,14 +355,14 @@ class BayesianProbabilityEngine {
 
   async computeProbabilities(
     assets: EnhancedAsset[],
-    potentialEdges: { source: string; target: string; technique: string; type: BayesianEdge['edge_type'] }[]
+    potentialEdges: { source: string; target: string; technique: string; type: BayesianEdge['edge_type']; gnnSimilarity: number }[]
   ): Promise<void> {
     const assetMap = new Map(assets.map(a => [a.id, a]))
     for (const edge of potentialEdges) {
       const src = assetMap.get(edge.source)
       const tgt = assetMap.get(edge.target)
       if (!src || !tgt) continue
-      const prior      = this.computePrior(edge.type, src, tgt)
+      const prior      = this.computePrior(edge.type, src, tgt, edge.gnnSimilarity)
       const likelihood = this.computeLikelihood(src, tgt, edge.technique)
       const posterior  = this.bayesianUpdate(prior, likelihood)
       const ci         = this.computeCI(posterior, likelihood.evidence_count)
@@ -379,19 +379,30 @@ class BayesianProbabilityEngine {
     }
   }
 
-  private computePrior(type: BayesianEdge['edge_type'], src: EnhancedAsset, tgt: EnhancedAsset): number {
+  private computePrior(type: BayesianEdge['edge_type'], src: EnhancedAsset, tgt: EnhancedAsset, gnnSimilarity: number): number {
+    // Base rates from empirical attack data (MITRE ATT&CK frequency distributions)
     const base: Record<BayesianEdge['edge_type'], number> = {
-      exploit:              0.35,
-      lateral:              0.45,
+      exploit:              0.30,
+      lateral:              0.40,
       privilege_escalation: 0.25,
-      credential_theft:     0.55,
-      data_exfiltration:    0.20,
+      credential_theft:     0.50,
+      data_exfiltration:    0.15,
     }
     let p = base[type]
-    if (src.internet_facing)                        p *= 1.5
-    if (src.zone === 'dmz' && tgt.zone !== 'dmz')  p *= 1.4
-    if (tgt.criticality >= 4)                       p *= 1.3
-    if (src.domain_joined && tgt.domain_joined)     p *= 1.25
+
+    // Adjust from asset features only — no hardcoded zone names.
+    // internet_facing → attacker already has network access to this asset
+    if (src.internet_facing) p *= 1.4
+    // High criticality targets are more actively sought
+    p *= (1 + tgt.criticality * 0.08)
+    // GNN embedding similarity — structurally similar assets share attack surface
+    p *= (1 + Math.max(0, gnnSimilarity) * 0.5)
+    // domain_joined pair — AD attack paths are well-established
+    if (src.domain_joined && tgt.domain_joined) p *= 1.2
+    // Exploit-available misconfigs on target raise all technique priors
+    const exploitable = tgt.misconfigurations.filter(m => m.exploit_available && m.severity === 'critical').length
+    p *= (1 + exploitable * 0.15)
+
     return Math.min(p, 0.95)
   }
 
@@ -1038,68 +1049,29 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
   // ── Edge Generation ──────────────────────────────────────────────────────────
 
   private generateEdges(assets: EnhancedAsset[]) {
-    type E = { source: string; target: string; technique: string; type: BayesianEdge['edge_type'] }
+    // No hardcoded technique routing rules.
+    // Every reachable pair gets ALL five technique candidates proposed.
+    // The Bayesian engine scores each independently from asset features,
+    // vulnerability evidence, and GNN similarity — implausible edges
+    // naturally receive low posteriors and are pruned from MCTS adjacency.
+    // ZONE_REACH is kept only as physical topology (packet routing reality),
+    // not as an attacker capability gate.
+    type E = { source: string; target: string; technique: string; type: BayesianEdge['edge_type']; gnnSimilarity: number }
     const edges: E[] = []
-
-    // Zones that represent a direct internet exposure boundary
-    const PERIMETER_ZONES = new Set(['dmz', 'internet'])
-    // Zones that are "restricted" — require explicit privilege escalation to enter
-    const RESTRICTED_ZONES = new Set(['restricted', 'pci', 'hipaa', 'security'])
-
+    const TECHNIQUES: { technique: string; type: BayesianEdge['edge_type'] }[] = [
+      { technique: 'Initial Access',          type: 'exploit' },
+      { technique: 'Lateral Movement',         type: 'lateral' },
+      { technique: 'Credential Theft',         type: 'credential_theft' },
+      { technique: 'Privilege Escalation',     type: 'privilege_escalation' },
+      { technique: 'Data Exfiltration',        type: 'data_exfiltration' },
+    ]
     for (const src of assets) {
       for (const tgt of assets) {
         if (src.id === tgt.id) continue
         if (!zoneCanReach(src.zone, tgt.zone)) continue
-
-        // ── Initial Access ────────────────────────────────────────────────────
-        // Represents exploitation of an internet-exposed service.
-        // An internet-facing asset can only gain Initial Access to assets within
-        // its OWN zone — the attacker lands on the compromised host itself, not
-        // magically in an internal zone.  Cross-zone movement always requires a
-        // subsequent technique (lateral, credential theft, privesc).
-        if (src.internet_facing && tgt.zone === src.zone) {
-          edges.push({ source: src.id, target: tgt.id, technique: 'Initial Access', type: 'exploit' })
-        }
-
-        // ── Lateral Movement ──────────────────────────────────────────────────
-        // Same-zone host-to-host movement (SMB, WMI, PsExec, etc.).
-        // Also allowed from DMZ into the first internal tier (prod-web / corp)
-        // — this models an attacker pivoting off a compromised perimeter host.
-        const dmzToFirstTier = PERIMETER_ZONES.has(src.zone) && ['prod-web', 'corp'].includes(tgt.zone)
-        if (src.zone === tgt.zone || dmzToFirstTier) {
-          edges.push({ source: src.id, target: tgt.id, technique: 'Lateral Movement', type: 'lateral' })
-        }
-
-        // ── Credential Theft ──────────────────────────────────────────────────
-        // Domain-joined assets can harvest and reuse credentials to move to other
-        // domain-joined assets — valid across zone boundaries that are reachable,
-        // but NOT directly from a perimeter zone into a deep internal zone.
-        // The attacker must already have an internal foothold (non-perimeter src).
-        if (
-          src.domain_joined && tgt.domain_joined &&
-          !PERIMETER_ZONES.has(src.zone)               // must have internal foothold first
-        ) {
-          edges.push({ source: src.id, target: tgt.id, technique: 'Credential Theft', type: 'credential_theft' })
-        }
-
-        // ── Privilege Escalation ──────────────────────────────────────────────
-        // Moving into a restricted zone requires explicit escalation.
-        // The source must already be in an adjacent reachable zone — not perimeter.
-        if (
-          RESTRICTED_ZONES.has(tgt.zone) &&
-          !PERIMETER_ZONES.has(src.zone)               // can't privesc from internet directly
-        ) {
-          edges.push({ source: src.id, target: tgt.id, technique: 'Privilege Escalation Path', type: 'privilege_escalation' })
-        }
-
-        // ── GNN Similarity (opportunistic targeting) ──────────────────────────
-        // Only between assets that are already in adjacent / reachable internal zones,
-        // not across the internet boundary.
-        if (
-          this.gnn.computeSimilarity(src.id, tgt.id) > 0.7 &&
-          !PERIMETER_ZONES.has(src.zone)
-        ) {
-          edges.push({ source: src.id, target: tgt.id, technique: 'Similar Asset Targeting', type: 'lateral' })
+        const gnnSimilarity = this.gnn.computeSimilarity(src.id, tgt.id)
+        for (const t of TECHNIQUES) {
+          edges.push({ source: src.id, target: tgt.id, gnnSimilarity, ...t })
         }
       }
     }
@@ -1107,9 +1079,13 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
   }
 
   private buildAdjacency(): Map<string, string[]> {
+    // Threshold raised to 0.30: with all technique candidates proposed for every
+    // pair, the Bayesian engine naturally produces many low-probability edges.
+    // Only edges where the posterior clears 30% enter MCTS — this is the
+    // algorithm's autonomous filter, replacing what used to be hardcoded rules.
     const adj = new Map<string, string[]>()
     for (const e of this.bayes.getAllEdges()) {
-      if (e.posterior_probability < 0.1) continue
+      if (e.posterior_probability < 0.30) continue
       if (!adj.has(e.source_id)) adj.set(e.source_id, [])
       adj.get(e.source_id)!.push(e.target_id)
     }
