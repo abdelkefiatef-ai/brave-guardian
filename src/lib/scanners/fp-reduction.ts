@@ -561,8 +561,7 @@ export const CURRENT_FP_ESTIMATES: Record<string, {
 }
 
 // ============================================================================
-// EXPORTS
+// EXPORTS — class is already exported at definition above
 // ============================================================================
 
-export { FalsePositiveAnalyzer }
 export type { FalsePositiveRisk, ValidationContext, ValidatedDetection }

@@ -939,7 +939,7 @@ Respond with JSON:
     // Quick heuristics based on asset properties
     const highValueTypes = ['domain_controller', 'identity_server', 'pki_server', 'certificate_authority']
     const isHighValueType = highValueTypes.some(t => asset.type.toLowerCase().includes(t))
-    const hasHighSensitivity = ['credentials', 'pii', 'financial'].includes(asset.data_sensitivity?.toLowerCase())
+    const hasHighSensitivity = ['credentials', 'pii', 'financial'].includes((asset.data_sensitivity || '').toLowerCase())
     
     return isHighValueType || (asset.criticality >= 5 && hasHighSensitivity)
   }

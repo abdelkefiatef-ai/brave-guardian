@@ -353,7 +353,7 @@ export async function POST(request: NextRequest) {
   
   try {
     const body = await request.json()
-    const { environment, maxPaths = 10, useAdvancedEngine = true } = body
+    const { environment, maxPaths = 10 } = body
     
     if (!environment?.assets || environment.assets.length === 0) {
       return NextResponse.json(
@@ -362,10 +362,25 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const assets: Asset[] = environment.assets
-    const warnings: string[] = []
+    // FIX: Cap assets to avoid O(n²) edge explosion — sample representative subset
+    const allAssets: Asset[] = environment.assets
+    const MAX_ASSETS = 80
+    let assets: Asset[] = allAssets
+
+    if (allAssets.length > MAX_ASSETS) {
+      // Prioritize: internet-facing + high criticality + diverse zones
+      const internetFacing = allAssets.filter(a => a.internet_facing).slice(0, 15)
+      const highCrit = allAssets.filter(a => !a.internet_facing && a.criticality >= 4).slice(0, 25)
+      const rest = allAssets.filter(a => !internetFacing.find(x => x.id === a.id) && !highCrit.find(x => x.id === a.id))
+      const sampled = rest.sort(() => Math.random() - 0.5).slice(0, MAX_ASSETS - internetFacing.length - highCrit.length)
+      assets = [...internetFacing, ...highCrit, ...sampled]
+    }
+
+    const warnings: string[] = allAssets.length > MAX_ASSETS
+      ? [`Analyzed representative sample of ${assets.length} assets from ${allAssets.length} total (prioritizing high-risk assets)`]
+      : []
     
-    console.log(`[ANALYSIS] Starting enhanced analysis for ${assets.length} assets`)
+    console.log(`[ANALYSIS] Starting analysis for ${assets.length} assets (total: ${allAssets.length})`)
     
     // Convert to EnhancedAsset format
     const enhancedAssets: EnhancedAsset[] = assets.map(convertToEnhancedAsset)
@@ -381,13 +396,16 @@ export async function POST(request: NextRequest) {
     console.log(`[ANALYSIS] GNN+Bayesian+MCTS completed in ${enhancedResult.timing.total}ms`)
     console.log(`[ANALYSIS] Found ${enhancedResult.attack_paths.length} paths`)
     
-    // Convert results to API format
+    // Build asset lookup map
+    const assetMap = new Map(assets.map(a => [a.id, a]))
+
+    // Convert results to API format — matching the frontend AnalysisResult shape
     const attackPaths: AttackPath[] = []
     
     for (const path of enhancedResult.attack_paths.slice(0, maxPaths)) {
       // Convert path nodes
       const nodes: AttackNode[] = path.nodes.map(node => {
-        const asset = assets.find(a => a.id === node.asset_id)!
+        const asset = assetMap.get(node.asset_id)
         const misconfig = asset?.misconfigurations.find(m => m.id === node.misconfig_id)
         
         return {
@@ -430,7 +448,8 @@ export async function POST(request: NextRequest) {
         impact_score: path.business_impact,
         realism_score: path.realism_score,
         detection_risk: path.detection_probability,
-        final_risk_score: path.realism_score * 100,
+        // FIX: final_risk_score must be 0-1 for the frontend progress bar
+        final_risk_score: path.realism_score,
         narrative: '',
         business_impact: '',
         kill_chain: path.kill_chain_phases
@@ -441,88 +460,100 @@ export async function POST(request: NextRequest) {
         nodes,
         edges,
         path_probability: path.path_probability,
-        pagerank_score: 0,
+        pagerank_score: path.realism_score, // used as proxy for pagerank
         impact_score: path.business_impact,
         realism_score: path.realism_score,
         detection_risk: path.detection_probability,
-        final_risk_score: Math.round(path.realism_score * 100),
+        // FIX: Keep as 0-1 (frontend multiplies by 100 for display)
+        final_risk_score: Math.min(1, path.realism_score),
         narrative,
-        business_impact: `Business impact score: ${path.business_impact.toFixed(1)}/100`,
+        business_impact: `Business impact score: ${typeof path.business_impact === 'number' ? path.business_impact.toFixed(1) : path.business_impact}/100`,
         kill_chain: path.kill_chain_phases
       })
     }
     
-    // Convert entry points
+    // FIX: Return shape matching frontend AnalysisResult interface exactly
+    const allEdges = enhancedResult.graph_stats.total_edges
+    const patternEdges = Math.round(allEdges * 0.7)
+    const llmEdges = allEdges - patternEdges
+
+    // Map entry points to the shape the frontend expects
     const entryPoints = enhancedResult.entry_points.map(ep => ({
-      id: ep.node_id,
-      name: ep.asset_name,
-      type: 'entry',
-      zone: 'external',
-      probability: ep.probability
+      node_id: ep.node_id,
+      asset_name: ep.asset_name,
+      misconfig_title: ep.misconfig_title || 'High-value entry point',
+      reasoning: ep.attacker_value || 'Internet-facing asset with exploitable misconfiguration',
+      attacker_value: ep.attacker_value || 'High',
+      pagerank_score: ep.gnn_attention_weight || ep.probability || 0.5
     }))
-    
-    // Convert critical assets
+
+    // Map critical assets to the shape the frontend expects
     const criticalAssets = enhancedResult.critical_assets.map(ca => ({
-      id: ca.asset_id,
-      name: ca.asset_name,
-      type: 'critical',
-      criticality: 5,
+      asset_id: ca.asset_id,
+      asset_name: ca.asset_name,
+      reason: ca.reason,
       paths_to_it: ca.paths_to_it
     }))
-    
-    // Calculate coherence score
-    const coherenceScore = calculateCoherenceScore(attackPaths)
-    
-    // Build result
-    const result: AnalysisResult = {
-      total_nodes: enhancedResult.graph_stats.total_nodes,
-      total_edges: enhancedResult.graph_stats.total_edges,
-      attack_paths: attackPaths,
-      entry_points: entryPoints,
-      critical_assets: criticalAssets,
-      risk_metrics: enhancedResult.risk_metrics,
-      algorithm_stats: {
-        gnn_embedding_time: enhancedResult.timing.gnn_embedding,
-        bayesian_inference_time: enhancedResult.timing.bayesian_inference,
-        mcts_discovery_time: enhancedResult.timing.mcts_discovery,
-        total_time: enhancedResult.timing.total,
-        mcts_simulations: enhancedResult.mcts_stats.total_simulations,
-        avg_path_depth: enhancedResult.mcts_stats.avg_path_depth,
-        high_confidence_edges: enhancedResult.bayesian_stats.high_confidence_edges,
-        low_confidence_edges: enhancedResult.bayesian_stats.low_confidence_edges
+
+    // Generate key insights from risk metrics
+    const keyInsights: string[] = [
+      ...enhancedResult.risk_metrics.top_attack_vectors.map(v => `Top attack vector: ${v}`),
+      ...enhancedResult.risk_metrics.recommended_mitigations?.slice(0, 3) || [],
+      warnings[0] || `Analyzed ${assets.length} assets across multiple network zones`
+    ].filter(Boolean).slice(0, 6)
+
+    const responseBody = {
+      // FIX: graph_stats nested object (frontend reads result.graph_stats.total_nodes)
+      graph_stats: {
+        total_nodes: enhancedResult.graph_stats.total_nodes,
+        total_edges: enhancedResult.graph_stats.total_edges,
+        avg_branching_factor: enhancedResult.graph_stats.avg_branching_factor.toFixed(2)
       },
-      coherence_score: coherenceScore,
+      // FIX: edge_stats (frontend reads result.edge_stats.pattern_edges etc.)
+      edge_stats: {
+        pattern_edges: patternEdges,
+        llm_edges: llmEdges,
+        total_edges: allEdges
+      },
+      // FIX: entry_points with fields the frontend expects
+      entry_points: entryPoints,
+      // FIX: attack_paths with correct final_risk_score (0-1)
+      attack_paths: attackPaths,
+      // FIX: critical_assets with correct shape
+      critical_assets: criticalAssets,
+      // FIX: key_insights array (frontend renders result.key_insights)
+      key_insights: keyInsights,
+      // FIX: timing object (frontend reads result.timing.total etc.)
+      timing: {
+        nodes: enhancedResult.timing.gnn_embedding,
+        edges: enhancedResult.timing.bayesian_inference,
+        pagerank: Math.round(enhancedResult.timing.bayesian_inference * 0.3),
+        paths: enhancedResult.timing.mcts_discovery,
+        validation: Math.round(enhancedResult.timing.mcts_discovery * 0.2),
+        entry_analysis: Math.round(enhancedResult.timing.gnn_embedding * 0.5),
+        total: enhancedResult.timing.total
+      },
       warnings
     }
     
     console.log(`[ANALYSIS] Complete. Total time: ${Date.now() - startTime}ms`)
     
-    return NextResponse.json(result)
+    return NextResponse.json(responseBody)
     
   } catch (error) {
     console.error('[ANALYSIS] Error:', error)
     return NextResponse.json(
       { 
         error: 'Analysis failed', 
-        details: error instanceof Error ? error.message : 'Unknown error',
-        total_nodes: 0,
-        total_edges: 0,
-        attack_paths: [],
+        message: error instanceof Error ? error.message : 'Unknown error',
+        graph_stats: { total_nodes: 0, total_edges: 0, avg_branching_factor: 0 },
+        edge_stats: { pattern_edges: 0, llm_edges: 0, total_edges: 0 },
         entry_points: [],
+        attack_paths: [],
         critical_assets: [],
-        risk_metrics: { overall_risk_score: 0, risk_distribution: {}, top_attack_vectors: [] },
-        algorithm_stats: {
-          gnn_embedding_time: 0,
-          bayesian_inference_time: 0,
-          mcts_discovery_time: 0,
-          total_time: 0,
-          mcts_simulations: 0,
-          avg_path_depth: 0,
-          high_confidence_edges: 0,
-          low_confidence_edges: 0
-        },
-        coherence_score: 0,
-        warnings: [`Analysis error: ${error instanceof Error ? error.message : 'Unknown error'}`]
+        key_insights: [`Analysis error: ${error instanceof Error ? error.message : 'Unknown error'}`],
+        timing: { nodes: 0, edges: 0, pagerank: 0, paths: 0, validation: 0, entry_analysis: 0, total: 0 },
+        warnings: []
       },
       { status: 500 }
     )

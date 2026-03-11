@@ -15,6 +15,7 @@ interface ScanTarget {
   port?: number
   ip?: string
   hostname?: string
+  zone?: string
   criticality?: number
   internetFacing?: boolean
   businessUnit?: string

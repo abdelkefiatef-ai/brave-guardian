@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useMemo, useEffect } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 
 // ============================================================================
 // TYPES
@@ -476,14 +476,13 @@ const generateEnterpriseAssets = (): Asset[] => {
   return assets
 }
 
-const INITIAL_ASSETS = generateEnterpriseAssets()
-
 // ============================================================================
 // MAIN COMPONENT
 // ============================================================================
 
 export default function BraveGuardian() {
-  const [assets, setAssets] = useState<Asset[]>(INITIAL_ASSETS)
+  // FIX: Use lazy initializer — prevents blocking module parse on load
+  const [assets, setAssets] = useState<Asset[]>(() => generateEnterpriseAssets())
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState('')
@@ -517,6 +516,8 @@ export default function BraveGuardian() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             environment: {
+              // FIX: Send all assets — server caps to 80 representative ones.
+              // But still limit payload: send only needed fields, no redundant data.
               assets: assets.map(a => ({
                 id: a.id,
                 name: a.name,
@@ -532,7 +533,8 @@ export default function BraveGuardian() {
                   id: m.id,
                   title: m.title,
                   description: m.description,
-                  category: m.category
+                  category: m.category,
+                  severity: m.severity
                 }))
               }))
             }
@@ -629,13 +631,18 @@ export default function BraveGuardian() {
     setAssets(prev => prev.map(a => ({ ...a, scanStatus: 'pending' as const })))
 
     try {
+      // FIX: Cap scan targets — sending 500 assets causes huge request + slow server processing
+      const scanTargets = assets
+        .sort((a, b) => b.criticality - a.criticality || (a.internet_facing ? -1 : 1))
+        .slice(0, 100)
+
       // Start scan
       const startResponse = await fetch('/api/scanner', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'scan',
-          targets: assets.map(a => ({
+          targets: scanTargets.map(a => ({
             id: a.id,
             host: a.ip,
             ip: a.ip,
@@ -683,23 +690,6 @@ export default function BraveGuardian() {
 
     setScanLoading(false)
   }, [assets])
-
-  // Poll scan status
-  useEffect(() => {
-    if (scanJob && scanJob.status === 'running') {
-      const interval = setInterval(async () => {
-        const response = await fetch(`/api/scanner?jobId=${scanJob.id}`)
-        if (response.ok) {
-          const { job } = await response.json()
-          setScanJob(job)
-          if (job.status !== 'running') {
-            clearInterval(interval)
-          }
-        }
-      }, 1000)
-      return () => clearInterval(interval)
-    }
-  }, [scanJob])
 
   const stats = useMemo(() => {
     const totalMisconfigs = assets.reduce((s, a) => s + a.misconfigurations.length, 0)

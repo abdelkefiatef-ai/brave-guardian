@@ -757,8 +757,7 @@ export class HighPerformanceScanner {
 }
 
 // ============================================================================
-// EXPORTS
+// EXPORTS — interfaces already exported at definition above
 // ============================================================================
 
 export { ConnectionPool, HostDiscovery, ResultCache, DEFAULT_CONFIG }
-export type { HighPerfConfig, ConnectionPoolStats }
