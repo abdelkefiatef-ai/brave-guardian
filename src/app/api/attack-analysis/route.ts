@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import ZAI from 'z-ai-web-dev-sdk'
 import { 
   EnhancedAttackGraphEngine,
   type EnhancedAsset,
@@ -190,49 +189,76 @@ function convertToEnhancedAsset(asset: Asset): EnhancedAsset {
 }
 
 // ============================================================================
-// LLM NARRATIVE GENERATION
+// QWEN3 VIA OPENROUTER — NO FALLBACK
 // ============================================================================
 
-let zaiClient: Awaited<ReturnType<typeof ZAI.create>> | null = null
+const OPENROUTER_KEY = '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'
+const QWEN_MODEL = 'qwen/qwen3-235b-a22b'
 
-async function getZaiClient() {
-  if (!zaiClient) {
-    zaiClient = await ZAI.create()
-  }
-  return zaiClient
-}
-
-async function generateNarrative(path: AttackPath): Promise<string> {
-  try {
-    const zai = await getZaiClient()
-    
-    const pathDescription = path.nodes.map((n, i) => 
-      `${i + 1}. ${n.asset_name} (${n.asset_type}, ${n.asset_zone}) - ${n.misconfig_title}`
-    ).join('\n')
-
-    const techniques = path.edges.map(e => e.technique).join(', ')
-
-    const prompt = `You are a senior red team operator. Create a brief attack narrative for this path:
-
-${pathDescription}
-
-Techniques used: ${techniques}
-Overall probability: ${(path.path_probability * 100).toFixed(1)}%
-
-Write a 2-3 sentence narrative describing how an attacker would execute this attack path. Be specific about techniques and outcomes.`
-
-    const completion = await zai.chat.completions.create({
+async function callQwen(prompt: string, maxTokens = 400): Promise<string> {
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENROUTER_KEY}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://brave-guardian.vercel.app',
+      'X-Title': 'Brave Guardian'
+    },
+    body: JSON.stringify({
+      model: QWEN_MODEL,
       messages: [{ role: 'user', content: prompt }],
+      max_tokens: maxTokens,
       temperature: 0.7,
-      max_tokens: 200
+      thinking: { type: 'disabled' }
     })
-
-    return completion.choices?.[0]?.message?.content || `Attack path from ${path.nodes[0].asset_name} to ${path.nodes[path.nodes.length - 1].asset_name} using ${techniques}.`
-  } catch (error) {
-    return `Attack path from ${path.nodes[0].asset_name} to ${path.nodes[path.nodes.length - 1].asset_name} exploiting ${path.nodes.length} vulnerabilities.`
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`OpenRouter/Qwen3 error ${res.status}: ${err}`)
   }
+  const data = await res.json()
+  const content = data.choices?.[0]?.message?.content
+  if (!content) throw new Error('Qwen3 returned empty response')
+  return content
 }
 
+// Batch narrative generation — all paths in ONE Qwen3 call
+async function generateNarrativesBatch(paths: AttackPath[]): Promise<{ narrative: string; business_impact: string }[]> {
+  const pathDescriptions = paths.map((path, idx) => {
+    const chain = path.nodes.map((n, i) =>
+      `  ${i + 1}. ${n.asset_name} (${n.asset_type}, ${n.asset_zone}) — ${n.misconfig_title}`
+    ).join('\n')
+    const techniques = path.edges.map(e => e.technique).join(' → ')
+    return `PATH ${idx + 1} [${path.path_id}]:
+Kill chain: ${path.kill_chain.join(' → ')}
+Steps:\n${chain}
+Techniques: ${techniques}
+Probability: ${(path.path_probability * 100).toFixed(1)}%
+Risk: ${Math.round(Math.min(1, path.final_risk_score) * 100)}%`
+  }).join('\n\n---\n\n')
+
+  const prompt = `You are a senior red team operator writing executive attack path reports.
+
+For each attack path, write:
+1. NARRATIVE: 2-3 sentences describing HOW the attacker executes this path (specific techniques, lateral movement)
+2. BUSINESS_IMPACT: 1-2 sentences on the financial/operational consequence
+
+Return ONLY a valid JSON array with exactly ${paths.length} objects, no markdown:
+[{"narrative":"...","business_impact":"..."},...]
+
+PATHS:
+${pathDescriptions}`
+
+  const raw = await callQwen(prompt, 1200)
+  const clean = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
+  const jsonMatch = clean.match(/\[[\s\S]*\]/)
+  if (!jsonMatch) throw new Error(`Qwen3 no JSON array. Response: ${raw.substring(0, 200)}`)
+  const parsed = JSON.parse(jsonMatch[0])
+  if (!Array.isArray(parsed) || parsed.length !== paths.length) {
+    throw new Error(`Qwen3 returned ${Array.isArray(parsed) ? parsed.length : 'non-array'} for ${paths.length} paths`)
+  }
+  return parsed
+}
 // ============================================================================
 // ZONE TOPOLOGY
 // ============================================================================
@@ -400,14 +426,11 @@ export async function POST(request: NextRequest) {
     const assetMap = new Map(assets.map(a => [a.id, a]))
 
     // Convert results to API format — matching the frontend AnalysisResult shape
-    const attackPaths: AttackPath[] = []
-    
-    for (const path of enhancedResult.attack_paths.slice(0, maxPaths)) {
-      // Convert path nodes
+    // Step 1: build nodes+edges for all paths (no LLM yet)
+    const rawPaths = enhancedResult.attack_paths.slice(0, maxPaths).map(path => {
       const nodes: AttackNode[] = path.nodes.map(node => {
         const asset = assetMap.get(node.asset_id)
         const misconfig = asset?.misconfigurations.find(m => m.id === node.misconfig_id)
-        
         return {
           id: `${node.asset_id}::${node.misconfig_id}`,
           asset_id: node.asset_id,
@@ -425,52 +448,52 @@ export async function POST(request: NextRequest) {
           services: asset?.services || []
         }
       })
-      
-      // Convert edges
       const edges: AttackEdge[] = path.edges.map(edge => ({
         source_id: edge.source_id,
         target_id: edge.target_id,
         probability: edge.posterior_probability,
         technique: edge.technique,
         credentials_carried: [],
-        reasoning: `Bayesian probability: ${(edge.posterior_probability * 100).toFixed(1)}% (CI: ${(edge.confidence_interval[0] * 100).toFixed(1)}%-${(edge.confidence_interval[1] * 100).toFixed(1)}%)`,
-        edge_type: 'gnn_bayesian',
+        reasoning: `Bayesian ${(edge.posterior_probability * 100).toFixed(1)}% (CI: ${(edge.confidence_interval[0] * 100).toFixed(1)}%–${(edge.confidence_interval[1] * 100).toFixed(1)}%)`,
+        edge_type: 'gnn_bayesian' as const,
         confidence_interval: edge.confidence_interval
       }))
-      
-      // Generate narrative
-      const narrative = await generateNarrative({
+      return {
         path_id: path.path_id,
-        nodes,
-        edges,
+        nodes, edges,
         path_probability: path.path_probability,
-        pagerank_score: 0,
-        impact_score: path.business_impact,
         realism_score: path.realism_score,
         detection_risk: path.detection_probability,
-        // FIX: final_risk_score must be 0-1 for the frontend progress bar
-        final_risk_score: path.realism_score,
-        narrative: '',
-        business_impact: '',
-        kill_chain: path.kill_chain_phases
-      })
-      
-      attackPaths.push({
-        path_id: path.path_id,
-        nodes,
-        edges,
-        path_probability: path.path_probability,
-        pagerank_score: path.realism_score, // used as proxy for pagerank
-        impact_score: path.business_impact,
-        realism_score: path.realism_score,
-        detection_risk: path.detection_probability,
-        // FIX: Keep as 0-1 (frontend multiplies by 100 for display)
         final_risk_score: Math.min(1, path.realism_score),
-        narrative,
-        business_impact: `Business impact score: ${typeof path.business_impact === 'number' ? path.business_impact.toFixed(1) : path.business_impact}/100`,
-        kill_chain: path.kill_chain_phases
-      })
-    }
+        kill_chain: path.kill_chain_phases,
+        business_impact_score: path.business_impact
+      }
+    })
+
+    // Step 2: ONE batch Qwen3 call for all narratives
+    console.log(`[ANALYSIS] Calling Qwen3 for ${rawPaths.length} narratives (batch)`)
+    const narrativeResults = await generateNarrativesBatch(rawPaths.map(rp => ({
+      ...rp,
+      pagerank_score: rp.realism_score,
+      impact_score: rp.business_impact_score,
+      narrative: '',
+      business_impact: ''
+    })))
+
+    const attackPaths: AttackPath[] = rawPaths.map((rp, i) => ({
+      path_id: rp.path_id,
+      nodes: rp.nodes,
+      edges: rp.edges,
+      path_probability: rp.path_probability,
+      pagerank_score: rp.realism_score,
+      impact_score: rp.business_impact_score,
+      realism_score: rp.realism_score,
+      detection_risk: rp.detection_risk,
+      final_risk_score: rp.final_risk_score,
+      narrative: narrativeResults[i].narrative,
+      business_impact: narrativeResults[i].business_impact,
+      kill_chain: rp.kill_chain
+    }))
     
     // FIX: Return shape matching frontend AnalysisResult interface exactly
     const allEdges = enhancedResult.graph_stats.total_edges

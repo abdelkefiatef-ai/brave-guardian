@@ -16,7 +16,31 @@
 // ============================================================================
 
 import { EventEmitter } from 'events'
-import ZAI from 'z-ai-web-dev-sdk'
+// OpenRouter — Qwen3-235B-A22B (no fallback)
+async function callQwen(prompt: string, maxTokens = 300): Promise<string> {
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer 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`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://brave-guardian.vercel.app',
+      'X-Title': 'Brave Guardian'
+    },
+    body: JSON.stringify({
+      model: 'qwen/qwen3-235b-a22b',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: maxTokens,
+      temperature: 0.1,
+      thinking: { type: 'disabled' }
+    })
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`OpenRouter error ${res.status}: ${err}`)
+  }
+  const data = await res.json()
+  return data.choices?.[0]?.message?.content || ''
+}
 
 // ============================================================================
 // TYPES
@@ -706,8 +730,8 @@ class BayesianProbabilityEngine {
 class MCTSPathDiscoveryEngine {
   private explorationConstant = 1.414  // sqrt(2) for UCB
   private maxSimulations = 10000
-  private maxDepth = 6
-  private minDepth = 3  // Minimum 3 nodes: entry → intermediate → target
+  private maxDepth = 7
+  private minDepth = 4  // Minimum 4 nodes: entry → lateral → pivot → target
   private root: MCTSNode | null = null
   private gnnEngine: GNNEmbeddingEngine
   private bayesianEngine: BayesianProbabilityEngine
@@ -901,14 +925,7 @@ Respond with JSON:
 }`
 
     try {
-      const zai = await ZAI.create()
-      const completion = await zai.chat.completions.create({
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.1,
-        max_tokens: 200
-      })
-      
-      const response = completion.choices?.[0]?.message?.content || ''
+      const response = await callQwen(prompt, 200)
       const jsonMatch = response.match(/\{[\s\S]*\}/)
       
       if (jsonMatch) {
@@ -923,13 +940,9 @@ Respond with JSON:
         return isCrownJewel
       }
     } catch (error) {
-      console.error('[CROWN JEWEL LLM] Error:', error)
+      console.error('[CROWN JEWEL] Qwen3 error:', error)
+      throw error
     }
-    
-    // Fallback: Use criticality as proxy (5 = likely crown jewel)
-    const fallback = asset.criticality >= 5
-    this.crownJewelCache.set(cacheKey, fallback)
-    return fallback
   }
   
   /**
