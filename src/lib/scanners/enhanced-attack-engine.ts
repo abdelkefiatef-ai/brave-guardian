@@ -314,23 +314,36 @@ class GNNEmbeddingEngine {
       const emb       = this.nodeEmbeddings.get(asset.id)!   // write target
       const neighbors = neighborMap.get(asset.id) ?? []
       if (neighbors.length === 0) continue
+      // V: softmax attention over all neighbours — replaces per-neighbour sigmoid.
+      // Sigmoid independently upweights every neighbour; softmax normalises across
+      // them so the model concentrates weight on the most structurally similar
+      // neighbour rather than diffusely averaging all of them.
       for (let h = 0; h < this.HEADS; h++) {
         const s = h * headDim
-        let attnSum = 0
-        const weighted = new Float32Array(headDim)
+        // Pass 1: compute raw dot products and stable softmax (subtract max for numerical stability)
+        const dots: number[] = []
+        const validNeighbors: Float32Array[] = []
         for (const nid of neighbors) {
-          const ne = snapshot.get(nid)   // read from frozen snapshot
+          const ne = snapshot.get(nid)
           if (!ne) continue
           let dot = 0
           for (let i = 0; i < headDim; i++) dot += emb[s + i] * ne[s + i]
-          const a = Math.exp(dot) / (1 + Math.exp(dot))
-          attnSum += a
-          for (let i = 0; i < headDim; i++) weighted[i] += a * ne[s + i]
+          dots.push(dot)
+          validNeighbors.push(ne)
         }
-        if (attnSum > 0) {
-          for (let i = 0; i < headDim; i++) {
-            emb[s + i] = 0.7 * emb[s + i] + 0.3 * (weighted[i] / attnSum)
-          }
+        if (dots.length === 0) continue
+        const maxDot = Math.max(...dots)
+        let expSum = 0
+        const expDots = dots.map(d => { const e = Math.exp(d - maxDot); expSum += e; return e })
+        // Pass 2: weighted sum using softmax weights
+        const weighted = new Float32Array(headDim)
+        for (let n = 0; n < validNeighbors.length; n++) {
+          const w = expDots[n] / expSum
+          const ne = validNeighbors[n]
+          for (let i = 0; i < headDim; i++) weighted[i] += w * ne[s + i]
+        }
+        for (let i = 0; i < headDim; i++) {
+          emb[s + i] = 0.7 * emb[s + i] + 0.3 * weighted[i]
         }
       }
       this.nodeEmbeddings.set(asset.id, emb)
@@ -462,13 +475,36 @@ class BayesianProbabilityEngine {
     p *= (1 + tgt.criticality * 0.08)
     // GNN similarity: assets with similar embeddings share attack surface —
     // but only when they are also zone-close (handled by dist penalty above).
-    // A high similarity across distant zones is a GNN artefact, not a signal.
     if (dist <= 1) p *= (1 + Math.max(0, gnnSimilarity) * 0.3)
     // Domain-joined pair: AD credential paths are well-established
     if (src.domain_joined && tgt.domain_joined) p *= 1.2
     // Exploit-available critical misconfigs raise all technique priors
     const exploitable = tgt.misconfigurations.filter(m => m.exploit_available && m.severity === 'critical').length
     p *= (1 + exploitable * 0.15)
+
+    // II: Technique-target affinity — MITRE ATT&CK frequency-derived uplifts.
+    // These are evidence uplifts, not hardcoded routing rules. They reflect the
+    // empirical observation that certain techniques are overwhelmingly associated
+    // with certain target types in real-world intrusion data.
+    const tt = tgt.type
+    if (type === 'credential_theft') {
+      if (tt === 'domain_controller' || tt === 'identity_server') p *= 1.5  // T1003, T1558 — DC is the canonical cred target
+      else if (tt === 'jump_server'  || tt === 'email_server')    p *= 1.25 // privileged credential stores
+    }
+    if (type === 'privilege_escalation') {
+      if (tt === 'domain_controller')                               p *= 1.4  // T1484 — domain priv-esc
+      else if (tt === 'pki_server' || tt === 'ca_server')          p *= 1.3  // certificate abuse
+      else if (tt === 'identity_server')                            p *= 1.3  // T1078 — valid accounts
+    }
+    if (type === 'lateral') {
+      if (tgt.zone === 'restricted' || tgt.zone === 'security' || tgt.zone === 'mgmt') p *= 1.3
+    }
+    if (type === 'exploit') {
+      if (tt === 'web_server' || tt === 'app_server') p *= 1.2   // internet-reachable attack surface
+    }
+    if (type === 'data_exfiltration') {
+      if (tt === 'database_server' || tt === 'backup_server' || tt === 'file_server') p *= 1.3
+    }
 
     return Math.min(p, 0.95)
   }
@@ -570,11 +606,43 @@ class MCTSPathDiscoveryEngine {
     return { best_reward: 0 }
   }
 
+  // I: BFS from every asset to nearest crown jewel in the adjacency graph.
+  // Returns Map<asset_id, hops> where 0 = is a crown jewel, 99 = unreachable.
+  // Used in simulate() to give graduated partial rewards that steer rollouts
+  // toward crown jewels even when they don't reach one in MAX_D steps.
+  buildCrownJewelDistances(
+    adj: Map<string, string[]>,
+    targetAssets: Set<string>
+  ): Map<string, number> {
+    // Build reverse adjacency once — O(E) — then multi-source BFS is O(V+E).
+    // The naive approach (scanning all adj for each BFS step) was O(V×E).
+    const revAdj = new Map<string, string[]>()
+    for (const [src, tgts] of adj) {
+      for (const tgt of tgts) {
+        if (!revAdj.has(tgt)) revAdj.set(tgt, [])
+        revAdj.get(tgt)!.push(src)
+      }
+    }
+    const dist = new Map<string, number>()
+    const queue: string[] = []
+    for (const id of targetAssets) { dist.set(id, 0); queue.push(id) }
+    let head = 0
+    while (head < queue.length) {
+      const cur = queue[head++]
+      const d   = dist.get(cur)!
+      for (const src of (revAdj.get(cur) ?? [])) {
+        if (!dist.has(src)) { dist.set(src, d + 1); queue.push(src) }
+      }
+    }
+    return dist
+  }
+
   async discoverPaths(
     entryPoints: { asset_id: string; misconfig_id: string }[],
     targetAssets: Set<string>,
     adj: Map<string, string[]>,
-    assetMap: Map<string, EnhancedAsset>
+    assetMap: Map<string, EnhancedAsset>,
+    cjDist: Map<string, number> = new Map()
   ): Promise<RealisticAttackPath[]> {
     // C: parallel crown jewel evaluation — LLM calls are independent, run
     // concurrently with Promise.all. 11 sequential calls @ ~15ms each = ~165ms;
@@ -623,10 +691,11 @@ class MCTSPathDiscoveryEngine {
         break
       }
 
-      // Clear RAVE tables for each new entry-point tree — statistics from a
-      // different root don't transfer meaningfully to a new topology context.
+      // Clear per-tree caches — RAVE stats and rollout scores from a different
+      // root don't transfer meaningfully to a new topology context (IV).
       this.raveTotal.clear()
       this.raveVisits.clear()
+      this.scoreCache.clear()   // IV: stale scores from prev tree corrupt rollouts
 
       const root: MCTSNode = {
         id: `${entry.asset_id}:${entry.misconfig_id}`,
@@ -651,7 +720,7 @@ class MCTSPathDiscoveryEngine {
       for (let sim = 0; sim < this.SIMS; sim++) {
         const leaf  = this.select(root)
         const child = this.expand(leaf, adj, assetMap)
-        let   rew   = this.simulate(child, targetAssets, adj, assetMap)
+        let   rew   = this.simulate(child, targetAssets, adj, assetMap, cjDist)
 
         // ── Reward shaping: penalise paths toward already-saturated patterns ──
         if (rew > 0 && child.path_from_root.length >= 2) {
@@ -804,7 +873,8 @@ class MCTSPathDiscoveryEngine {
     node: MCTSNode,
     targetAssets: Set<string>,
     adj: Map<string, string[]>,
-    assetMap: Map<string, EnhancedAsset>
+    assetMap: Map<string, EnhancedAsset>,
+    cjDist: Map<string, number> = new Map()
   ): number {
     let current = node.asset_id
     let cumProb  = node.probability
@@ -863,61 +933,61 @@ class MCTSPathDiscoveryEngine {
       depth++
     }
 
-    // Partial reward for high-criticality intermediary
+    // I: graduated partial reward toward nearest crown jewel.
+    // If rollout didn't reach a CJ, reward scales with (proximity to CJ × criticality).
+    // This gives every simulation a useful gradient signal instead of binary 0/1:
+    // rollouts that got closer to a crown jewel receive proportionally higher rewards,
+    // steering the tree toward CJ-reachable corridors even in early simulations.
     if (reward === 0) {
-      const a = assetMap.get(current)
-      if (a && a.criticality >= 4) reward = (a.criticality / 5) * 0.2
+      const d   = cjDist.get(current) ?? 99
+      const a   = assetMap.get(current)
+      const crit = (a?.criticality ?? 1) / 5
+      if (d < 99) {
+        // Proximity bonus: 1 hop away = 0.25, 2 hops = 0.125, 3 hops = 0.0625…
+        reward = crit * (0.5 / Math.pow(2, d))
+      } else if (a && a.criticality >= 4) {
+        reward = crit * 0.05   // tiny signal for high-crit non-CJ dead ends
+      }
     }
 
     return reward
   }
 
-  // ── Terminal Reward — no triple depth penalty ───────────────────────────────
+  // ── Terminal Reward — single traversal (III) ────────────────────────────────
+  // Previously terminalReward() walked the MCTSNode chain, then called
+  // detectionRisk() which walked it again. Merged into one pass: phases,
+  // minEdgeP, pathLen, and risk are all collected in the same loop.
 
   private terminalReward(node: MCTSNode, target: EnhancedAsset, assetMap: Map<string, EnhancedAsset>): number {
     const critReward = target.criticality / 5
     const phases = new Set<string>()
-    let pathLen = 0
+    let pathLen  = 0
     let minEdgeP = 1.0
+    let risk     = 0
     let cur: MCTSNode | null = node
 
     while (cur) {
       const a = assetMap.get(cur.asset_id)
       const m = a?.misconfigurations.find(x => x.id === cur!.misconfig_id)
-      if (m) phases.add(m.category)
+      if (m) {
+        phases.add(m.category)
+        // detection risk contribution (was a separate traversal)
+        if      (m.severity === 'critical')        risk += 0.08
+        else if (m.category === 'authentication')  risk += 0.02
+        else                                        risk += 0.04
+      }
+      if (cur.depth === 0) risk += 0.15
       minEdgeP = Math.min(minEdgeP, cur.probability)
       pathLen++
       cur = cur.parent
     }
 
-    // Kill chain completeness bonus (+0–150%)
     const killChainBonus = 1 + Math.min(phases.size / 5, 1) * 1.5
-
-    // Length modifier: 4–7 = sweet spot
-    const lenMod = pathLen < 4 ? 0.4 : pathLen <= 7 ? 1.3 : pathLen <= 10 ? 1.0 : 0.7
-
-    // Stealth factor from weakest edge (0.5–1.0)
-    const stealth = 0.5 + minEdgeP * 0.5
-
-    // Detection risk capped at 0.5 so it never zeroes the reward
-    const detRisk = Math.min(this.detectionRisk(node, assetMap), 0.5)
+    const lenMod   = pathLen < 4 ? 0.4 : pathLen <= 7 ? 1.3 : pathLen <= 10 ? 1.0 : 0.7
+    const stealth  = 0.5 + minEdgeP * 0.5
+    const detRisk  = Math.min(risk, 0.5)
 
     return critReward * killChainBonus * lenMod * stealth * (1 - detRisk)
-  }
-
-  private detectionRisk(node: MCTSNode, assetMap: Map<string, EnhancedAsset>): number {
-    let risk = 0
-    let cur: MCTSNode | null = node
-    while (cur) {
-      const a = assetMap.get(cur.asset_id)
-      const m = a?.misconfigurations.find(x => x.id === cur!.misconfig_id)
-      if (m?.severity === 'critical')            risk += 0.08
-      else if (m?.category === 'authentication') risk += 0.02
-      else                                        risk += 0.04
-      if (cur.depth === 0) risk += 0.15
-      cur = cur.parent
-    }
-    return Math.min(risk, 0.9)
   }
 
   // ── Backpropagation + RAVE update ───────────────────────────────────────────
@@ -1031,8 +1101,11 @@ class MCTSPathDiscoveryEngine {
 
   // ── Pattern diversity helpers ─────────────────────────────────────────────
 
-  // Structural fingerprint: entry_type:entry_zone | e1→e2→... | target_type:target_zone
-  // Two paths share a pattern iff this string matches — irrespective of specific assets.
+  // Structural fingerprint: entry_type:zone | edges | target_type:zone | zone_depth
+  // VI: include the count of distinct zone-hops in the fingerprint.
+  // Two paths with the same technique sequence but different network depth
+  // (e.g. shallow dmz→restricted vs deep mgmt→security→restricted traversal)
+  // represent genuinely distinct attack strategies and should be reported separately.
   patternSignature(path: RealisticAttackPath, assetMap: Map<string, EnhancedAsset>): string {
     const entry  = path.nodes[0]
     const target = path.nodes[path.nodes.length - 1]
@@ -1041,7 +1114,11 @@ class MCTSPathDiscoveryEngine {
     const entryPart  = `${ea?.type ?? entry.asset_id}:${entry.zone}`
     const targetPart = `${ta?.type ?? target.asset_id}:${target.zone}`
     const edgePart   = path.edges.map(e => e.edge_type).join('→')
-    return `${entryPart}|${edgePart}|${targetPart}`
+    // VI: count unique zone transitions across the path
+    const zones = path.nodes.map(n => n.zone)
+    let zoneHops = 0
+    for (let i = 1; i < zones.length; i++) if (zones[i] !== zones[i-1]) zoneHops++
+    return `${entryPart}|${edgePart}|${targetPart}|z${zoneHops}`
   }
 
   // Human-readable label derived from the signature — includes hop count so
@@ -1208,10 +1285,20 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
     const t3 = Date.now()
     const assetMap     = new Map(assets.map(a => [a.id, a]))
     const entryPoints  = this.identifyEntryPoints(assets)
-    const targetAssets = new Set(assets.filter(a => a.criticality >= 4).map(a => a.id))
+    // I: targetAssets = crown jewels only, not all crit≥4 assets.
+    // Previously crit≥4 matched ~44 staging/app/corp assets that stopped
+    // rollouts before reaching DCs/IdPs/PKIs. Now MCTS only terminates at
+    // true game-over assets; intermediate high-crit assets contribute a
+    // graduated partial reward via distanceToTarget() in simulate().
+    const targetAssets = new Set(
+      Array.from(assetMap.values())
+        .filter(a => this.mcts.isCrownJewelCached(a))
+        .map(a => a.id)
+    )
     const adj          = this.buildAdjacency()
 
-    const attackPaths = await this.mcts.discoverPaths(entryPoints, targetAssets, adj, assetMap)
+    const cjDist  = this.mcts.buildCrownJewelDistances(adj, targetAssets)
+    const attackPaths = await this.mcts.discoverPaths(entryPoints, targetAssets, adj, assetMap, cjDist)
     const mctsTime = Date.now() - t3
 
     const allEdges  = this.bayes.getAllEdges()
@@ -1282,15 +1369,21 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
   }
 
   private buildAdjacency(): Map<string, string[]> {
-    // Threshold raised to 0.30: with all technique candidates proposed for every
-    // pair, the Bayesian engine naturally produces many low-probability edges.
-    // Only edges where the posterior clears 30% enter MCTS — this is the
-    // algorithm's autonomous filter, replacing what used to be hardcoded rules.
-    const adj = new Map<string, string[]>()
+    // Threshold 0.30: only edges clearing 30% posterior enter MCTS.
+    // VII: collect edges with posterior probability, then sort each adjacency
+    // list by posterior descending. expand() processes neighbours in this order,
+    // so UCB selection gets the highest-probability candidates first — the tree
+    // converges to high-reward corridors faster with no extra computation at runtime.
+    const adjWithProb = new Map<string, { id: string; prob: number }[]>()
     for (const e of this.bayes.getAllEdges()) {
       if (e.posterior_probability < 0.30) continue
-      if (!adj.has(e.source_id)) adj.set(e.source_id, [])
-      adj.get(e.source_id)!.push(e.target_id)
+      if (!adjWithProb.has(e.source_id)) adjWithProb.set(e.source_id, [])
+      adjWithProb.get(e.source_id)!.push({ id: e.target_id, prob: e.posterior_probability })
+    }
+    const adj = new Map<string, string[]>()
+    for (const [src, targets] of adjWithProb) {
+      targets.sort((a, b) => b.prob - a.prob)
+      adj.set(src, targets.map(t => t.id))
     }
     return adj
   }
