@@ -627,11 +627,19 @@ function AnalysisView({ result, loading, status, onAnalyze }: { result: Analysis
     return (
       <div className="space-y-5">
         <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-12 text-center">
-          <div className="text-5xl mb-4">🕸️</div>
+          <div className="text-5xl mb-4">{loading ? '⚙️' : '🕸️'}</div>
           <div className="text-slate-300 font-mono mb-1">GNN + Bayesian + MCTS Analysis Engine</div>
-          <div className="text-xs text-slate-600 font-mono mb-6">Graph Neural Networks · Bayesian Inference · Monte Carlo Tree Search · LLM Validation</div>
-          {status && (
-            <div className="mb-5 inline-block text-xs font-mono text-amber-400 bg-amber-950/30 border border-amber-900/60 rounded-lg px-4 py-2">{status}</div>
+          <div className="text-xs text-slate-600 font-mono mb-6">Graph Neural Networks · Bayesian Inference · Monte Carlo Tree Search · Qwen3 Validation</div>
+          {loading && (
+            <div className="mb-5 space-y-2">
+              <div className="inline-flex items-center gap-2 text-xs font-mono text-amber-400 bg-amber-950/30 border border-amber-900/60 rounded-lg px-4 py-2">
+                <Spin />{status || 'Initializing…'}
+              </div>
+              <div className="text-xs text-slate-600 font-mono">Crown jewel evaluation · MCTS search · Qwen3 narrative generation</div>
+            </div>
+          )}
+          {!loading && status && (
+            <div className="mb-5 inline-block text-xs font-mono text-red-400 bg-red-950/30 border border-red-900/60 rounded-lg px-4 py-2">{status}</div>
           )}
           <div>
             <button onClick={onAnalyze} disabled={loading}
@@ -679,7 +687,7 @@ function AnalysisView({ result, loading, status, onAnalyze }: { result: Analysis
               { label: 'Edge Eval', v: result.timing.edges, c: 'bg-violet-500' },
               { label: 'PageRank', v: result.timing.pagerank, c: 'bg-emerald-500' },
               { label: 'Path Find', v: result.timing.paths, c: 'bg-amber-500' },
-              { label: 'LLM Valid', v: result.timing.validation, c: 'bg-red-500' },
+              { label: 'LLM Narr', v: result.timing.validation, c: 'bg-red-500' },
             ].map(({ label, v, c }) => (
               <div key={label} className="flex items-center gap-3">
                 <div className="w-16 text-xs font-mono text-slate-500">{label}</div>
@@ -765,7 +773,7 @@ function AnalysisView({ result, loading, status, onAnalyze }: { result: Analysis
 // ─── PATHS VIEW ───────────────────────────────────────────────────────────────
 
 function PathsView({ result }: { result: AnalysisResult | null }) {
-  const [sel, setSel] = useState<number | null>(null)
+  const [sel, setSel] = useState<number | null>(result?.attack_paths?.length ? 0 : null)
 
   if (!result?.attack_paths?.length) {
     return (
@@ -793,7 +801,7 @@ function PathsView({ result }: { result: AnalysisResult | null }) {
               <button key={p.path_id} onClick={() => setSel(i)}
                 className={`w-full text-left p-4 hover:bg-[#161b22] transition-colors ${sel === i ? 'bg-red-950/10 border-l-2 border-red-600 pl-[14px]' : ''}`}>
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-mono font-bold text-slate-300">{p.path_id}</span>
+                  <span className="text-xs font-mono font-bold text-slate-300">PATH-{String(i+1).padStart(2,"0")}</span>
                   <span className={`text-xs font-mono px-2 py-0.5 rounded border ${risk > 0.5 ? 'text-red-400 border-red-900 bg-red-950/30' : 'text-amber-400 border-amber-900 bg-amber-950/30'}`}>
                     {Math.round(risk * 100)}%
                   </span>
@@ -827,7 +835,7 @@ function PathsView({ result }: { result: AnalysisResult | null }) {
             {/* Header */}
             <div className="px-5 py-4 border-b border-[#21262d] flex items-center justify-between shrink-0">
               <div>
-                <div className="font-mono font-bold text-slate-100">{path.path_id}</div>
+                <div className="font-mono font-bold text-slate-100">PATH-{String(sel !== null ? sel + 1 : 1).padStart(2, "0")} — {path.nodes[0]?.asset_name} → {path.nodes[path.nodes.length-1]?.asset_name}</div>
                 <div className="text-xs text-slate-600 font-mono mt-0.5">
                   {path.nodes.length} steps · {[...new Set(path.nodes.map(n => n.asset_id))].length} unique assets
                 </div>
@@ -877,14 +885,26 @@ function PathsView({ result }: { result: AnalysisResult | null }) {
                       </div>
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-xs text-orange-400 font-mono">{node.misconfig_title}</span>
-                        <SevPill sev={node.misconfig_category} />
+                        <span className={`px-2 py-0.5 rounded text-xs border font-mono uppercase tracking-wider ${
+                          node.misconfig_category === 'authentication' ? 'text-red-400 bg-red-950/60 border-red-800' :
+                          node.misconfig_category === 'authorization'  ? 'text-violet-400 bg-violet-950/60 border-violet-800' :
+                          node.misconfig_category === 'network'        ? 'text-blue-400 bg-blue-950/60 border-blue-800' :
+                          node.misconfig_category === 'service'        ? 'text-amber-400 bg-amber-950/60 border-amber-800' :
+                          node.misconfig_category === 'encryption'     ? 'text-cyan-400 bg-cyan-950/60 border-cyan-800' :
+                          'text-slate-400 bg-slate-800 border-slate-700'
+                        }`}>{node.misconfig_category}</span>
                       </div>
                       {edge && (
-                        <div className="text-xs font-mono bg-[#161b22] border border-[#21262d] rounded px-3 py-1.5 text-slate-500 flex items-center gap-2">
-                          <span>→ {Math.round(edge.probability * 100)}% · {edge.technique}</span>
-                          <span className={`px-1.5 py-0.5 rounded border text-xs ${edge.edge_type === 'llm' || edge.edge_type === 'gnn_bayesian' ? 'text-violet-400 border-violet-900' : 'text-blue-400 border-blue-900'}`}>
-                            {edge.edge_type === 'gnn_bayesian' ? 'Bayesian' : edge.edge_type === 'llm' ? 'LLM' : 'Pattern'}
-                          </span>
+                        <div className="text-xs font-mono bg-[#161b22] border border-[#21262d] rounded px-3 py-2 text-slate-500 space-y-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-emerald-500">→</span>
+                            <span className="text-slate-300 font-semibold">{edge.technique}</span>
+                            <span className="text-blue-400">{Math.round(edge.probability * 100)}% success</span>
+                            <span className={`ml-auto px-1.5 py-0.5 rounded border text-xs ${edge.edge_type === 'llm' || edge.edge_type === 'gnn_bayesian' ? 'text-violet-400 border-violet-900' : 'text-blue-400 border-blue-900'}`}>
+                              {edge.edge_type === 'gnn_bayesian' ? 'Bayesian' : edge.edge_type === 'llm' ? 'LLM' : 'Pattern'}
+                            </span>
+                          </div>
+                          <div className="text-slate-600 truncate">{edge.reasoning}</div>
                         </div>
                       )}
                     </div>

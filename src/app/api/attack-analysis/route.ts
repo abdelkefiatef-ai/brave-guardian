@@ -473,6 +473,7 @@ export async function POST(request: NextRequest) {
 
     // Step 2: ONE batch Qwen3 call for all narratives
     console.log(`[ANALYSIS] Calling Qwen3 for ${rawPaths.length} narratives (batch)`)
+    const llmStart = Date.now()
     const narrativeResults = await generateNarrativesBatch(rawPaths.map(rp => ({
       ...rp,
       pagerank_score: rp.realism_score,
@@ -480,6 +481,7 @@ export async function POST(request: NextRequest) {
       narrative: '',
       business_impact: ''
     })))
+    const llmTime = Date.now() - llmStart
 
     const attackPaths: AttackPath[] = rawPaths.map((rp, i) => ({
       path_id: rp.path_id,
@@ -553,9 +555,9 @@ export async function POST(request: NextRequest) {
         edges: enhancedResult.timing.bayesian_inference,
         pagerank: Math.round(enhancedResult.timing.bayesian_inference * 0.3),
         paths: enhancedResult.timing.mcts_discovery,
-        validation: Math.round(enhancedResult.timing.mcts_discovery * 0.2),
+        validation: llmTime,
         entry_analysis: Math.round(enhancedResult.timing.gnn_embedding * 0.5),
-        total: enhancedResult.timing.total
+        total: enhancedResult.timing.total + llmTime
       },
       warnings
     }
