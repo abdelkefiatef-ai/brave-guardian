@@ -2,9 +2,7 @@
 
 import { useState, useCallback, useMemo } from 'react'
 
-// ============================================================================
-// TYPES
-// ============================================================================
+// ─── TYPES ───────────────────────────────────────────────────────────────────
 
 interface Misconfiguration {
   id: string
@@ -75,7 +73,7 @@ interface AttackEdge {
   technique: string
   credentials_carried: string[]
   reasoning: string
-  edge_type: 'pattern' | 'llm'
+  edge_type: 'pattern' | 'llm' | 'gnn_bayesian'
 }
 
 interface AttackPath {
@@ -94,47 +92,16 @@ interface AttackPath {
 }
 
 interface AnalysisResult {
-  graph_stats: {
-    total_nodes: number
-    total_edges: number
-    avg_branching_factor: number | string
-  }
-  edge_stats: {
-    pattern_edges: number
-    llm_edges: number
-    total_edges: number
-    candidates_evaluated?: number
-  }
-  entry_points: Array<{
-    node_id: string
-    asset_name: string
-    misconfig_title: string
-    reasoning: string
-    attacker_value: string
-    pagerank_score: number
-  }>
+  graph_stats: { total_nodes: number; total_edges: number; avg_branching_factor: number | string }
+  edge_stats: { pattern_edges: number; llm_edges: number; total_edges: number }
+  entry_points: Array<{ node_id: string; asset_name: string; misconfig_title: string; reasoning: string; attacker_value: string; pagerank_score: number }>
   attack_paths: AttackPath[]
-  critical_assets: Array<{
-    asset_id: string
-    asset_name: string
-    reason: string
-    paths_to_it: number
-  }>
+  critical_assets: Array<{ asset_id: string; asset_name: string; reason: string; paths_to_it: number }>
   key_insights: string[]
-  timing: {
-    nodes: number
-    edges: number
-    pagerank: number
-    paths: number
-    validation: number
-    entry_analysis: number
-    total: number
-  }
+  timing: { nodes: number; edges: number; pagerank: number; paths: number; validation: number; entry_analysis: number; total: number }
 }
 
-// ============================================================================
-// MISCONFIGURATION DATABASE
-// ============================================================================
+// ─── STATIC DATA ─────────────────────────────────────────────────────────────
 
 const MISCONFIG_DB: Misconfiguration[] = [
   { id: 'M001', title: 'RDP Accessible from Internet', description: 'RDP port 3389 open to internet', category: 'network', severity: 'critical', evidence: 'Port scan', remediation: 'Block RDP at firewall' },
@@ -155,1481 +122,1025 @@ const MISCONFIG_DB: Misconfiguration[] = [
   { id: 'M050', title: 'Command Line Logging Disabled', description: 'No process logging', category: 'logging', severity: 'medium', evidence: 'Audit policy', remediation: 'Enable logging' },
 ]
 
-// ============================================================================
-// ENTERPRISE ENVIRONMENT GENERATOR - 500 Assets
-// Realistic enterprise network with zones, segmentation, and business units
-// ============================================================================
-
-// Network Zones - Represents enterprise network segmentation
 const NETWORK_ZONES = {
-  // Perimeter
-  'dmz': { name: 'DMZ', color: 'red', description: 'Demilitarized Zone - Internet-facing', subnet: '10.0' },
-  'internet': { name: 'Internet', color: 'darkred', description: 'External network', subnet: '0.0.0.0' },
-  
-  // Production
-  'prod-web': { name: 'Prod Web', color: 'orange', description: 'Production Web Tier', subnet: '10.10' },
-  'prod-app': { name: 'Prod App', color: 'yellow', description: 'Production Application Tier', subnet: '10.11' },
-  'prod-db': { name: 'Prod DB', color: 'red', description: 'Production Database Tier', subnet: '10.12' },
-  
-  // Development
-  'dev-web': { name: 'Dev Web', color: 'blue', description: 'Development Web Tier', subnet: '10.20' },
-  'dev-app': { name: 'Dev App', color: 'cyan', description: 'Development Application Tier', subnet: '10.21' },
-  'dev-db': { name: 'Dev DB', color: 'purple', description: 'Development Database Tier', subnet: '10.22' },
-  
-  // Staging/QA
-  'staging': { name: 'Staging', color: 'teal', description: 'Staging/QA Environment', subnet: '10.30' },
-  
-  // Internal Corporate
-  'corp': { name: 'Corporate', color: 'green', description: 'Corporate Network', subnet: '10.100' },
-  'corp-wifi': { name: 'Corp WiFi', color: 'lightgreen', description: 'Corporate Wireless', subnet: '10.101' },
-  
-  // Restricted/High-Security
-  'restricted': { name: 'Restricted', color: 'darkred', description: 'High-Security Zone', subnet: '10.200' },
-  'pci': { name: 'PCI-DSS', color: 'maroon', description: 'Payment Card Industry', subnet: '10.201' },
-  'hipaa': { name: 'HIPAA', color: 'crimson', description: 'Healthcare Data', subnet: '10.202' },
-  
-  // Infrastructure
-  'mgmt': { name: 'Management', color: 'gray', description: 'Network Management', subnet: '10.250' },
-  'security': { name: 'Security', color: 'slate', description: 'Security Tools', subnet: '10.251' },
-  
-  // Cloud
-  'cloud-prod': { name: 'Cloud Prod', color: 'skyblue', description: 'Cloud Production', subnet: '172.16' },
-  'cloud-dev': { name: 'Cloud Dev', color: 'lightblue', description: 'Cloud Development', subnet: '172.17' },
-  
-  // Disaster Recovery
-  'dr': { name: 'DR Site', color: 'brown', description: 'Disaster Recovery', subnet: '10.180' },
+  'dmz':        { name: 'DMZ',        subnet: '10.0' },
+  'prod-web':   { name: 'Prod Web',   subnet: '10.10' },
+  'prod-app':   { name: 'Prod App',   subnet: '10.11' },
+  'prod-db':    { name: 'Prod DB',    subnet: '10.12' },
+  'dev-web':    { name: 'Dev Web',    subnet: '10.20' },
+  'dev-app':    { name: 'Dev App',    subnet: '10.21' },
+  'dev-db':     { name: 'Dev DB',     subnet: '10.22' },
+  'staging':    { name: 'Staging',    subnet: '10.30' },
+  'corp':       { name: 'Corporate',  subnet: '10.100' },
+  'corp-wifi':  { name: 'Corp WiFi',  subnet: '10.101' },
+  'restricted': { name: 'Restricted', subnet: '10.200' },
+  'pci':        { name: 'PCI-DSS',    subnet: '10.201' },
+  'hipaa':      { name: 'HIPAA',      subnet: '10.202' },
+  'mgmt':       { name: 'Management', subnet: '10.250' },
+  'security':   { name: 'Security',   subnet: '10.251' },
+  'cloud-prod': { name: 'Cloud Prod', subnet: '172.16' },
+  'cloud-dev':  { name: 'Cloud Dev',  subnet: '172.17' },
+  'dr':         { name: 'DR Site',    subnet: '10.180' },
 } as const
 
 type NetworkZone = keyof typeof NETWORK_ZONES
 
-// Business Units
 const BUSINESS_UNITS = [
-  { name: 'Finance', revenue: 50000000, criticality: 5 },
-  { name: 'Engineering', revenue: 30000000, criticality: 4 },
-  { name: 'Sales', revenue: 40000000, criticality: 4 },
-  { name: 'HR', revenue: 5000000, criticality: 3 },
-  { name: 'Operations', revenue: 20000000, criticality: 4 },
-  { name: 'Legal', revenue: 8000000, criticality: 4 },
-  { name: 'Marketing', revenue: 15000000, criticality: 3 },
-  { name: 'IT', revenue: 10000000, criticality: 5 },
-  { name: 'R&D', revenue: 25000000, criticality: 4 },
-  { name: 'Customer Support', revenue: 12000000, criticality: 3 },
+  { name: 'Finance', revenue: 50000000 },
+  { name: 'Engineering', revenue: 30000000 },
+  { name: 'Sales', revenue: 40000000 },
+  { name: 'HR', revenue: 5000000 },
+  { name: 'Operations', revenue: 20000000 },
+  { name: 'Legal', revenue: 8000000 },
+  { name: 'Marketing', revenue: 15000000 },
+  { name: 'IT', revenue: 10000000 },
+  { name: 'R&D', revenue: 25000000 },
+  { name: 'Customer Support', revenue: 12000000 },
 ] as const
 
-// Asset Type Definitions
-interface AssetTemplate {
-  type: string
-  namePrefix: string
-  zones: NetworkZone[]
-  criticality: number
-  domainJoined: boolean
-  services: string[]
-  dataSensitivity: string
-  internetFacing: boolean
-  misconfigCategories: string[]
-  count: number // How many to generate
-  envSpecific: boolean // Does it have dev/prod variants
-}
+// ─── SEEDED RNG ───────────────────────────────────────────────────────────────
 
-const ASSET_TEMPLATES: AssetTemplate[] = [
-  // === CORE INFRASTRUCTURE ===
-  { type: 'domain_controller', namePrefix: 'DC', zones: ['restricted', 'corp', 'mgmt'], criticality: 5, domainJoined: true, services: ['AD', 'DNS', 'LDAP'], dataSensitivity: 'credentials', internetFacing: false, misconfigCategories: ['authentication', 'authorization', 'network'], count: 8, envSpecific: false },
-  { type: 'backup_server', namePrefix: 'BKUP', zones: ['restricted', 'dr'], criticality: 5, domainJoined: true, services: ['Veeam', 'Commvault'], dataSensitivity: 'backups', internetFacing: false, misconfigCategories: ['authentication', 'encryption'], count: 6, envSpecific: false },
-  { type: 'dns_server', namePrefix: 'DNS', zones: ['mgmt', 'corp'], criticality: 4, domainJoined: true, services: ['DNS'], dataSensitivity: 'none', internetFacing: false, misconfigCategories: ['network', 'service'], count: 4, envSpecific: false },
-  { type: 'dhcp_server', namePrefix: 'DHCP', zones: ['mgmt', 'corp'], criticality: 3, domainJoined: true, services: ['DHCP'], dataSensitivity: 'none', internetFacing: false, misconfigCategories: ['network', 'authorization'], count: 3, envSpecific: false },
-  
-  // === IDENTITY & SECURITY ===
-  { type: 'identity_server', namePrefix: 'IDP', zones: ['restricted', 'security'], criticality: 5, domainJoined: true, services: ['Okta', 'ADFS', 'SAML'], dataSensitivity: 'credentials', internetFacing: true, misconfigCategories: ['authentication', 'authorization'], count: 4, envSpecific: false },
-  { type: 'pki_server', namePrefix: 'PKI', zones: ['restricted'], criticality: 5, domainJoined: true, services: ['CA', 'OCSP'], dataSensitivity: 'certificates', internetFacing: false, misconfigCategories: ['encryption', 'authentication'], count: 2, envSpecific: false },
-  { type: 'siem', namePrefix: 'SIEM', zones: ['security'], criticality: 5, domainJoined: true, services: ['Splunk', 'QRadar'], dataSensitivity: 'logs', internetFacing: false, misconfigCategories: ['logging', 'network'], count: 2, envSpecific: false },
-  { type: 'pam', namePrefix: 'PAM', zones: ['security', 'restricted'], criticality: 5, domainJoined: true, services: ['CyberArk', 'BeyondTrust'], dataSensitivity: 'credentials', internetFacing: false, misconfigCategories: ['authentication', 'authorization'], count: 3, envSpecific: false },
-  
-  // === PERIMETER / DMZ ===
-  { type: 'firewall', namePrefix: 'FW', zones: ['dmz', 'mgmt'], criticality: 5, domainJoined: false, services: ['Palo Alto', 'Fortinet'], dataSensitivity: 'firewall_rules', internetFacing: true, misconfigCategories: ['network', 'authorization'], count: 6, envSpecific: false },
-  { type: 'load_balancer', namePrefix: 'LB', zones: ['dmz', 'prod-web', 'cloud-prod'], criticality: 4, domainJoined: false, services: ['F5', 'NGINX'], dataSensitivity: 'ssl_certs', internetFacing: true, misconfigCategories: ['network', 'encryption'], count: 8, envSpecific: true },
-  { type: 'reverse_proxy', namePrefix: 'RPX', zones: ['dmz'], criticality: 4, domainJoined: false, services: ['NGINX', 'HAProxy'], dataSensitivity: 'ssl_certs', internetFacing: true, misconfigCategories: ['network', 'encryption'], count: 4, envSpecific: false },
-  { type: 'vpn_gateway', namePrefix: 'VPN', zones: ['dmz', 'corp'], criticality: 4, domainJoined: true, services: ['OpenVPN', 'Cisco ASA'], dataSensitivity: 'credentials', internetFacing: true, misconfigCategories: ['network', 'authentication'], count: 4, envSpecific: false },
-  { type: 'web_application_firewall', namePrefix: 'WAF', zones: ['dmz'], criticality: 4, domainJoined: false, services: ['ModSecurity', 'AWS WAF'], dataSensitivity: 'logs', internetFacing: true, misconfigCategories: ['network', 'logging'], count: 4, envSpecific: false },
-  
-  // === WEB SERVERS ===
-  { type: 'web_server', namePrefix: 'WEB', zones: ['dmz', 'prod-web', 'dev-web', 'staging', 'cloud-prod'], criticality: 4, domainJoined: false, services: ['IIS', 'Apache', 'NGINX'], dataSensitivity: 'app_data', internetFacing: true, misconfigCategories: ['network', 'service', 'encryption'], count: 25, envSpecific: true },
-  
-  // === APPLICATION SERVERS ===
-  { type: 'app_server', namePrefix: 'APP', zones: ['prod-app', 'dev-app', 'staging', 'cloud-prod'], criticality: 4, domainJoined: true, services: ['Tomcat', 'NodeJS', 'Java'], dataSensitivity: 'business_logic', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 30, envSpecific: true },
-  { type: 'api_gateway', namePrefix: 'API', zones: ['dmz', 'prod-web'], criticality: 4, domainJoined: false, services: ['Kong', 'Apigee'], dataSensitivity: 'api_keys', internetFacing: true, misconfigCategories: ['authentication', 'network'], count: 8, envSpecific: false },
-  { type: 'microservice', namePrefix: 'SVC', zones: ['prod-app', 'dev-app', 'cloud-prod', 'cloud-dev'], criticality: 3, domainJoined: false, services: ['Docker', 'K8s'], dataSensitivity: 'app_data', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 40, envSpecific: true },
-  
-  // === DATABASE SERVERS ===
-  { type: 'database_server', namePrefix: 'DB', zones: ['prod-db', 'dev-db', 'restricted', 'cloud-prod'], criticality: 5, domainJoined: true, services: ['SQL Server', 'Oracle', 'PostgreSQL'], dataSensitivity: 'pii', internetFacing: false, misconfigCategories: ['authentication', 'authorization', 'encryption'], count: 20, envSpecific: true },
-  { type: 'nosql_db', namePrefix: 'NOSQL', zones: ['prod-db', 'dev-db', 'cloud-prod'], criticality: 4, domainJoined: false, services: ['MongoDB', 'Redis', 'Elasticsearch'], dataSensitivity: 'pii', internetFacing: false, misconfigCategories: ['authentication', 'network'], count: 15, envSpecific: true },
-  { type: 'data_warehouse', namePrefix: 'DWH', zones: ['restricted', 'cloud-prod'], criticality: 5, domainJoined: true, services: ['Snowflake', 'Redshift', 'Teradata'], dataSensitivity: 'analytics', internetFacing: false, misconfigCategories: ['authentication', 'encryption'], count: 5, envSpecific: false },
-  
-  // === FILE & STORAGE ===
-  { type: 'file_server', namePrefix: 'FS', zones: ['corp', 'prod-app', 'restricted'], criticality: 4, domainJoined: true, services: ['SMB', 'NFS'], dataSensitivity: 'user_files', internetFacing: false, misconfigCategories: ['network', 'authorization'], count: 15, envSpecific: false },
-  { type: 'nas', namePrefix: 'NAS', zones: ['corp', 'restricted', 'dr'], criticality: 4, domainJoined: false, services: ['NFS', 'SMB'], dataSensitivity: 'documents', internetFacing: false, misconfigCategories: ['network', 'encryption'], count: 8, envSpecific: false },
-  { type: 'storage_server', namePrefix: 'STR', zones: ['cloud-prod', 'cloud-dev'], criticality: 4, domainJoined: false, services: ['S3', 'Blob'], dataSensitivity: 'mixed', internetFacing: false, misconfigCategories: ['encryption', 'authorization'], count: 10, envSpecific: true },
-  
-  // === COMMUNICATION ===
-  { type: 'email_server', namePrefix: 'MAIL', zones: ['dmz', 'corp'], criticality: 4, domainJoined: true, services: ['Exchange', 'Postfix'], dataSensitivity: 'emails', internetFacing: true, misconfigCategories: ['network', 'authentication', 'encryption'], count: 6, envSpecific: false },
-  { type: 'voip_server', namePrefix: 'VOIP', zones: ['corp'], criticality: 3, domainJoined: true, services: ['Cisco CUCM', 'Asterisk'], dataSensitivity: 'call_logs', internetFacing: false, misconfigCategories: ['network', 'service'], count: 4, envSpecific: false },
-  { type: 'chat_server', namePrefix: 'CHAT', zones: ['corp', 'cloud-prod'], criticality: 3, domainJoined: true, services: ['Slack', 'Teams', 'Mattermost'], dataSensitivity: 'messages', internetFacing: false, misconfigCategories: ['authentication', 'network'], count: 4, envSpecific: false },
-  
-  // === DEVELOPMENT ===
-  { type: 'build_server', namePrefix: 'BLD', zones: ['dev-app', 'cloud-dev'], criticality: 3, domainJoined: true, services: ['Jenkins', 'GitLab CI'], dataSensitivity: 'source_code', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 8, envSpecific: false },
-  { type: 'code_repo', namePrefix: 'GIT', zones: ['dev-app', 'cloud-dev'], criticality: 4, domainJoined: true, services: ['GitHub Enterprise', 'GitLab'], dataSensitivity: 'source_code', internetFacing: true, misconfigCategories: ['authentication', 'network'], count: 4, envSpecific: false },
-  { type: 'artifact_repo', namePrefix: 'ART', zones: ['dev-app', 'cloud-dev'], criticality: 3, domainJoined: false, services: ['Nexus', 'Artifactory'], dataSensitivity: 'artifacts', internetFacing: false, misconfigCategories: ['authentication', 'network'], count: 4, envSpecific: false },
-  
-  // === MONITORING & MANAGEMENT ===
-  { type: 'monitoring', namePrefix: 'MON', zones: ['mgmt', 'cloud-prod'], criticality: 4, domainJoined: true, services: ['Nagios', 'Zabbix', 'Datadog'], dataSensitivity: 'metrics', internetFacing: false, misconfigCategories: ['network', 'logging'], count: 8, envSpecific: false },
-  { type: 'logging_server', namePrefix: 'LOG', zones: ['mgmt', 'security'], criticality: 4, domainJoined: true, services: ['ELK', 'Splunk'], dataSensitivity: 'logs', internetFacing: false, misconfigCategories: ['logging', 'network'], count: 6, envSpecific: false },
-  { type: 'jump_server', namePrefix: 'JMP', zones: ['dmz', 'mgmt'], criticality: 4, domainJoined: true, services: ['RDP', 'SSH'], dataSensitivity: 'credentials', internetFacing: true, misconfigCategories: ['network', 'authentication'], count: 6, envSpecific: false },
-  
-  // === ENDPOINTS ===
-  { type: 'workstation', namePrefix: 'WS', zones: ['corp', 'corp-wifi', 'dev-web'], criticality: 2, domainJoined: true, services: ['Office', 'Browser'], dataSensitivity: 'user_data', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 80, envSpecific: false },
-  { type: 'laptop', namePrefix: 'LAP', zones: ['corp', 'corp-wifi'], criticality: 2, domainJoined: true, services: ['Office', 'Browser'], dataSensitivity: 'user_data', internetFacing: false, misconfigCategories: ['authentication', 'encryption'], count: 60, envSpecific: false },
-  { type: 'developer_workstation', namePrefix: 'DEVWS', zones: ['dev-web', 'dev-app'], criticality: 3, domainJoined: true, services: ['IDE', 'Docker'], dataSensitivity: 'source_code', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 40, envSpecific: false },
-  
-  // === SPECIAL PURPOSE ===
-  { type: 'iot_device', namePrefix: 'IOT', zones: ['corp', 'mgmt'], criticality: 2, domainJoined: false, services: ['Sensors', 'Camera'], dataSensitivity: 'telemetry', internetFacing: false, misconfigCategories: ['network', 'authentication'], count: 20, envSpecific: false },
-  { type: 'printer', namePrefix: 'PRT', zones: ['corp', 'corp-wifi'], criticality: 1, domainJoined: true, services: ['Print'], dataSensitivity: 'print_jobs', internetFacing: false, misconfigCategories: ['network'], count: 15, envSpecific: false },
-  { type: 'scanner', namePrefix: 'SCN', zones: ['corp'], criticality: 2, domainJoined: true, services: ['Scan'], dataSensitivity: 'scanned_docs', internetFacing: false, misconfigCategories: ['network'], count: 8, envSpecific: false },
-  
-  // === COMPLIANCE-SPECIFIC ===
-  { type: 'pci_server', namePrefix: 'PCI', zones: ['pci'], criticality: 5, domainJoined: true, services: ['Payment', 'CardProc'], dataSensitivity: 'pci_data', internetFacing: false, misconfigCategories: ['encryption', 'authentication', 'logging'], count: 6, envSpecific: false },
-  { type: 'hipaa_server', namePrefix: 'HIPAA', zones: ['hipaa'], criticality: 5, domainJoined: true, services: ['EHR', 'PHI'], dataSensitivity: 'phi', internetFacing: false, misconfigCategories: ['encryption', 'authentication', 'logging'], count: 8, envSpecific: false },
-  
-  // === CLOUD-NATIVE ===
-  { type: 'k8s_cluster', namePrefix: 'K8S', zones: ['cloud-prod', 'cloud-dev'], criticality: 4, domainJoined: false, services: ['Kubernetes'], dataSensitivity: 'workloads', internetFacing: false, misconfigCategories: ['authentication', 'authorization', 'network'], count: 12, envSpecific: true },
-  { type: 'container_registry', namePrefix: 'CR', zones: ['cloud-prod', 'cloud-dev'], criticality: 4, domainJoined: false, services: ['Docker Registry', 'ECR'], dataSensitivity: 'images', internetFacing: false, misconfigCategories: ['authentication', 'network'], count: 4, envSpecific: false },
-]
-
-// Seeded random number generator for reproducibility
 class SeededRandom {
   private seed: number
-  constructor(seed: number) {
-    this.seed = seed
-  }
-  next(): number {
-    this.seed = (this.seed * 1103515245 + 12345) & 0x7fffffff
-    return this.seed / 0x7fffffff
-  }
-  nextInt(min: number, max: number): number {
-    return Math.floor(this.next() * (max - min + 1)) + min
-  }
-  pick<T>(arr: readonly T[]): T {
-    return arr[Math.floor(this.next() * arr.length)]
-  }
+  constructor(seed: number) { this.seed = seed }
+  next(): number { this.seed = (this.seed * 1103515245 + 12345) & 0x7fffffff; return this.seed / 0x7fffffff }
+  nextInt(min: number, max: number): number { return Math.floor(this.next() * (max - min + 1)) + min }
+  pick<T>(arr: readonly T[]): T { return arr[Math.floor(this.next() * arr.length)] }
   shuffle<T>(arr: T[]): T[] {
-    const result = [...arr]
-    for (let i = result.length - 1; i > 0; i--) {
-      const j = Math.floor(this.next() * (i + 1))
-      ;[result[i], result[j]] = [result[j], result[i]]
-    }
-    return result
+    const r = [...arr]
+    for (let i = r.length - 1; i > 0; i--) { const j = Math.floor(this.next() * (i + 1));[r[i], r[j]] = [r[j], r[i]] }
+    return r
   }
 }
 
-// Generate realistic enterprise environment
-const generateEnterpriseAssets = (): Asset[] => {
+// ─── ASSET GENERATOR ─────────────────────────────────────────────────────────
+
+const ASSET_TEMPLATES = [
+  { type: 'domain_controller', namePrefix: 'DC', zones: ['restricted', 'corp', 'mgmt'] as NetworkZone[], criticality: 5, domainJoined: true, services: ['AD', 'DNS', 'LDAP'], dataSensitivity: 'credentials', internetFacing: false, misconfigCategories: ['authentication', 'authorization', 'network'], count: 8 },
+  { type: 'backup_server', namePrefix: 'BKUP', zones: ['restricted', 'dr'] as NetworkZone[], criticality: 5, domainJoined: true, services: ['Veeam', 'Commvault'], dataSensitivity: 'backups', internetFacing: false, misconfigCategories: ['authentication', 'encryption'], count: 6 },
+  { type: 'dns_server', namePrefix: 'DNS', zones: ['mgmt', 'corp'] as NetworkZone[], criticality: 4, domainJoined: true, services: ['DNS'], dataSensitivity: 'none', internetFacing: false, misconfigCategories: ['network', 'service'], count: 4 },
+  { type: 'dhcp_server', namePrefix: 'DHCP', zones: ['mgmt', 'corp'] as NetworkZone[], criticality: 3, domainJoined: true, services: ['DHCP'], dataSensitivity: 'none', internetFacing: false, misconfigCategories: ['network', 'authorization'], count: 3 },
+  { type: 'identity_server', namePrefix: 'IDP', zones: ['restricted', 'security'] as NetworkZone[], criticality: 5, domainJoined: true, services: ['Okta', 'ADFS', 'SAML'], dataSensitivity: 'credentials', internetFacing: true, misconfigCategories: ['authentication', 'authorization'], count: 4 },
+  { type: 'pki_server', namePrefix: 'PKI', zones: ['restricted'] as NetworkZone[], criticality: 5, domainJoined: true, services: ['CA', 'OCSP'], dataSensitivity: 'certificates', internetFacing: false, misconfigCategories: ['encryption', 'authentication'], count: 2 },
+  { type: 'siem', namePrefix: 'SIEM', zones: ['security'] as NetworkZone[], criticality: 5, domainJoined: true, services: ['Splunk', 'QRadar'], dataSensitivity: 'logs', internetFacing: false, misconfigCategories: ['logging', 'network'], count: 2 },
+  { type: 'pam', namePrefix: 'PAM', zones: ['security', 'restricted'] as NetworkZone[], criticality: 5, domainJoined: true, services: ['CyberArk', 'BeyondTrust'], dataSensitivity: 'credentials', internetFacing: false, misconfigCategories: ['authentication', 'authorization'], count: 3 },
+  { type: 'firewall', namePrefix: 'FW', zones: ['dmz', 'mgmt'] as NetworkZone[], criticality: 5, domainJoined: false, services: ['Palo Alto', 'Fortinet'], dataSensitivity: 'firewall_rules', internetFacing: true, misconfigCategories: ['network', 'authorization'], count: 6 },
+  { type: 'load_balancer', namePrefix: 'LB', zones: ['dmz', 'prod-web', 'cloud-prod'] as NetworkZone[], criticality: 4, domainJoined: false, services: ['F5', 'NGINX'], dataSensitivity: 'ssl_certs', internetFacing: true, misconfigCategories: ['network', 'encryption'], count: 8 },
+  { type: 'reverse_proxy', namePrefix: 'RPX', zones: ['dmz'] as NetworkZone[], criticality: 4, domainJoined: false, services: ['NGINX', 'HAProxy'], dataSensitivity: 'ssl_certs', internetFacing: true, misconfigCategories: ['network', 'encryption'], count: 4 },
+  { type: 'vpn_gateway', namePrefix: 'VPN', zones: ['dmz', 'corp'] as NetworkZone[], criticality: 4, domainJoined: true, services: ['OpenVPN', 'Cisco ASA'], dataSensitivity: 'credentials', internetFacing: true, misconfigCategories: ['network', 'authentication'], count: 4 },
+  { type: 'web_application_firewall', namePrefix: 'WAF', zones: ['dmz'] as NetworkZone[], criticality: 4, domainJoined: false, services: ['ModSecurity', 'AWS WAF'], dataSensitivity: 'logs', internetFacing: true, misconfigCategories: ['network', 'logging'], count: 4 },
+  { type: 'web_server', namePrefix: 'WEB', zones: ['dmz', 'prod-web', 'dev-web', 'staging', 'cloud-prod'] as NetworkZone[], criticality: 4, domainJoined: false, services: ['IIS', 'Apache', 'NGINX'], dataSensitivity: 'app_data', internetFacing: true, misconfigCategories: ['network', 'service', 'encryption'], count: 25 },
+  { type: 'app_server', namePrefix: 'APP', zones: ['prod-app', 'dev-app', 'staging', 'cloud-prod'] as NetworkZone[], criticality: 4, domainJoined: true, services: ['Tomcat', 'NodeJS', 'Java'], dataSensitivity: 'business_logic', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 30 },
+  { type: 'api_gateway', namePrefix: 'API', zones: ['dmz', 'prod-web'] as NetworkZone[], criticality: 4, domainJoined: false, services: ['Kong', 'Apigee'], dataSensitivity: 'api_keys', internetFacing: true, misconfigCategories: ['authentication', 'network'], count: 8 },
+  { type: 'microservice', namePrefix: 'SVC', zones: ['prod-app', 'dev-app', 'cloud-prod', 'cloud-dev'] as NetworkZone[], criticality: 3, domainJoined: false, services: ['Docker', 'K8s'], dataSensitivity: 'app_data', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 40 },
+  { type: 'database_server', namePrefix: 'DB', zones: ['prod-db', 'dev-db', 'restricted', 'cloud-prod'] as NetworkZone[], criticality: 5, domainJoined: true, services: ['SQL Server', 'Oracle', 'PostgreSQL'], dataSensitivity: 'pii', internetFacing: false, misconfigCategories: ['authentication', 'authorization', 'encryption'], count: 20 },
+  { type: 'nosql_db', namePrefix: 'NOSQL', zones: ['prod-db', 'dev-db', 'cloud-prod'] as NetworkZone[], criticality: 4, domainJoined: false, services: ['MongoDB', 'Redis', 'Elasticsearch'], dataSensitivity: 'pii', internetFacing: false, misconfigCategories: ['authentication', 'network'], count: 15 },
+  { type: 'data_warehouse', namePrefix: 'DWH', zones: ['restricted', 'cloud-prod'] as NetworkZone[], criticality: 5, domainJoined: true, services: ['Snowflake', 'Redshift', 'Teradata'], dataSensitivity: 'analytics', internetFacing: false, misconfigCategories: ['authentication', 'encryption'], count: 5 },
+  { type: 'file_server', namePrefix: 'FS', zones: ['corp', 'prod-app', 'restricted'] as NetworkZone[], criticality: 4, domainJoined: true, services: ['SMB', 'NFS'], dataSensitivity: 'user_files', internetFacing: false, misconfigCategories: ['network', 'authorization'], count: 15 },
+  { type: 'nas', namePrefix: 'NAS', zones: ['corp', 'restricted', 'dr'] as NetworkZone[], criticality: 4, domainJoined: false, services: ['NFS', 'SMB'], dataSensitivity: 'documents', internetFacing: false, misconfigCategories: ['network', 'encryption'], count: 8 },
+  { type: 'storage_server', namePrefix: 'STR', zones: ['cloud-prod', 'cloud-dev'] as NetworkZone[], criticality: 4, domainJoined: false, services: ['S3', 'Blob'], dataSensitivity: 'mixed', internetFacing: false, misconfigCategories: ['encryption', 'authorization'], count: 10 },
+  { type: 'email_server', namePrefix: 'MAIL', zones: ['dmz', 'corp'] as NetworkZone[], criticality: 4, domainJoined: true, services: ['Exchange', 'Postfix'], dataSensitivity: 'emails', internetFacing: true, misconfigCategories: ['network', 'authentication', 'encryption'], count: 6 },
+  { type: 'voip_server', namePrefix: 'VOIP', zones: ['corp'] as NetworkZone[], criticality: 3, domainJoined: true, services: ['Cisco CUCM', 'Asterisk'], dataSensitivity: 'call_logs', internetFacing: false, misconfigCategories: ['network', 'service'], count: 4 },
+  { type: 'chat_server', namePrefix: 'CHAT', zones: ['corp', 'cloud-prod'] as NetworkZone[], criticality: 3, domainJoined: true, services: ['Slack', 'Teams', 'Mattermost'], dataSensitivity: 'messages', internetFacing: false, misconfigCategories: ['authentication', 'network'], count: 4 },
+  { type: 'build_server', namePrefix: 'BLD', zones: ['dev-app', 'cloud-dev'] as NetworkZone[], criticality: 3, domainJoined: true, services: ['Jenkins', 'GitLab CI'], dataSensitivity: 'source_code', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 8 },
+  { type: 'code_repo', namePrefix: 'GIT', zones: ['dev-app', 'cloud-dev'] as NetworkZone[], criticality: 4, domainJoined: true, services: ['GitHub Enterprise', 'GitLab'], dataSensitivity: 'source_code', internetFacing: true, misconfigCategories: ['authentication', 'network'], count: 4 },
+  { type: 'artifact_repo', namePrefix: 'ART', zones: ['dev-app', 'cloud-dev'] as NetworkZone[], criticality: 3, domainJoined: false, services: ['Nexus', 'Artifactory'], dataSensitivity: 'artifacts', internetFacing: false, misconfigCategories: ['authentication', 'network'], count: 4 },
+  { type: 'monitoring', namePrefix: 'MON', zones: ['mgmt', 'cloud-prod'] as NetworkZone[], criticality: 4, domainJoined: true, services: ['Nagios', 'Zabbix', 'Datadog'], dataSensitivity: 'metrics', internetFacing: false, misconfigCategories: ['network', 'logging'], count: 8 },
+  { type: 'logging_server', namePrefix: 'LOG', zones: ['mgmt', 'security'] as NetworkZone[], criticality: 4, domainJoined: true, services: ['ELK', 'Splunk'], dataSensitivity: 'logs', internetFacing: false, misconfigCategories: ['logging', 'network'], count: 6 },
+  { type: 'jump_server', namePrefix: 'JMP', zones: ['dmz', 'mgmt'] as NetworkZone[], criticality: 4, domainJoined: true, services: ['RDP', 'SSH'], dataSensitivity: 'credentials', internetFacing: true, misconfigCategories: ['network', 'authentication'], count: 6 },
+  { type: 'workstation', namePrefix: 'WS', zones: ['corp', 'corp-wifi', 'dev-web'] as NetworkZone[], criticality: 2, domainJoined: true, services: ['Office', 'Browser'], dataSensitivity: 'user_data', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 80 },
+  { type: 'laptop', namePrefix: 'LAP', zones: ['corp', 'corp-wifi'] as NetworkZone[], criticality: 2, domainJoined: true, services: ['Office', 'Browser'], dataSensitivity: 'user_data', internetFacing: false, misconfigCategories: ['authentication', 'encryption'], count: 60 },
+  { type: 'developer_workstation', namePrefix: 'DEVWS', zones: ['dev-web', 'dev-app'] as NetworkZone[], criticality: 3, domainJoined: true, services: ['IDE', 'Docker'], dataSensitivity: 'source_code', internetFacing: false, misconfigCategories: ['authentication', 'service'], count: 40 },
+  { type: 'iot_device', namePrefix: 'IOT', zones: ['corp', 'mgmt'] as NetworkZone[], criticality: 2, domainJoined: false, services: ['Sensors', 'Camera'], dataSensitivity: 'telemetry', internetFacing: false, misconfigCategories: ['network', 'authentication'], count: 20 },
+  { type: 'printer', namePrefix: 'PRT', zones: ['corp', 'corp-wifi'] as NetworkZone[], criticality: 1, domainJoined: true, services: ['Print'], dataSensitivity: 'print_jobs', internetFacing: false, misconfigCategories: ['network'], count: 15 },
+  { type: 'scanner_device', namePrefix: 'SCN', zones: ['corp'] as NetworkZone[], criticality: 2, domainJoined: true, services: ['Scan'], dataSensitivity: 'scanned_docs', internetFacing: false, misconfigCategories: ['network'], count: 8 },
+  { type: 'pci_server', namePrefix: 'PCI', zones: ['pci'] as NetworkZone[], criticality: 5, domainJoined: true, services: ['Payment', 'CardProc'], dataSensitivity: 'pci_data', internetFacing: false, misconfigCategories: ['encryption', 'authentication', 'logging'], count: 6 },
+  { type: 'hipaa_server', namePrefix: 'HIPAA', zones: ['hipaa'] as NetworkZone[], criticality: 5, domainJoined: true, services: ['EHR', 'PHI'], dataSensitivity: 'phi', internetFacing: false, misconfigCategories: ['encryption', 'authentication', 'logging'], count: 8 },
+  { type: 'k8s_cluster', namePrefix: 'K8S', zones: ['cloud-prod', 'cloud-dev'] as NetworkZone[], criticality: 4, domainJoined: false, services: ['Kubernetes'], dataSensitivity: 'workloads', internetFacing: false, misconfigCategories: ['authentication', 'authorization', 'network'], count: 12 },
+  { type: 'container_registry', namePrefix: 'CR', zones: ['cloud-prod', 'cloud-dev'] as NetworkZone[], criticality: 4, domainJoined: false, services: ['Docker Registry', 'ECR'], dataSensitivity: 'images', internetFacing: false, misconfigCategories: ['authentication', 'network'], count: 4 },
+]
+
+function generateEnterpriseAssets(): Asset[] {
   const assets: Asset[] = []
-  const rng = new SeededRandom(42) // Reproducible results
-  
+  const rng = new SeededRandom(42)
   let assetId = 1
   const zoneCounters: Record<string, number> = {}
   const usedIPs = new Set<string>()
-  
-  // Generate unique IP
+
   const generateIP = (zone: NetworkZone): string => {
     const subnet = NETWORK_ZONES[zone].subnet
-    let ip: string
+    let ip = `${subnet}.0.1`
     let attempts = 0
     do {
-      const octet3 = rng.nextInt(0, 255)
-      const octet4 = rng.nextInt(1, 254)
-      ip = `${subnet}.${octet3}.${octet4}`
+      ip = `${subnet}.${rng.nextInt(0, 255)}.${rng.nextInt(1, 254)}`
       attempts++
-      if (attempts > 1000) {
-        ip = `${subnet}.${rng.nextInt(0, 255)}.${rng.nextInt(1, 254)}`
-        break
-      }
-    } while (usedIPs.has(ip))
+    } while (usedIPs.has(ip) && attempts < 1000)
     usedIPs.add(ip)
     return ip
   }
-  
-  // Generate misconfigurations for an asset
-  const generateMisconfigurations = (categories: string[]): Misconfiguration[] => {
-    const count = rng.nextInt(1, 3)
-    const relevant = MISCONFIG_DB.filter(m => categories.includes(m.category))
-    const shuffled = rng.shuffle(relevant)
-    return shuffled.slice(0, count).map(m => ({ ...m }))
+
+  const genMisconfigs = (cats: string[]): Misconfiguration[] => {
+    const relevant = MISCONFIG_DB.filter(m => cats.includes(m.category))
+    return rng.shuffle(relevant).slice(0, rng.nextInt(1, 3)).map(m => ({ ...m }))
   }
-  
-  // Environment suffix
+
   const getEnvSuffix = (zone: NetworkZone): string => {
     if (zone.startsWith('dev') || zone === 'cloud-dev') return '-D'
     if (zone.startsWith('staging')) return '-S'
     if (zone === 'dr') return '-DR'
     return ''
   }
-  
-  // Process each asset template
-  for (const template of ASSET_TEMPLATES) {
-    let remaining = template.count
-    
-    // Distribute across zones
-    const zones = rng.shuffle([...template.zones])
-    
+
+  for (const t of ASSET_TEMPLATES) {
+    let remaining = t.count
+    const zones = rng.shuffle([...t.zones])
     for (const zone of zones) {
       if (remaining <= 0) break
-      
-      // Determine how many of this type in this zone
-      const zoneShare = Math.ceil(remaining / zones.length)
-      const countInZone = Math.min(zoneShare, remaining)
-      
+      const countInZone = Math.min(Math.ceil(remaining / zones.length), remaining)
       for (let i = 0; i < countInZone; i++) {
-        // Zone counter for sequential naming
-        const zoneKey = `${template.type}-${zone}`
-        zoneCounters[zoneKey] = (zoneCounters[zoneKey] || 0) + 1
-        
-        const envSuffix = getEnvSuffix(zone)
-        const businessUnit = rng.pick(BUSINESS_UNITS)
-        
-        // Generate asset name
-        const zonePrefix = NETWORK_ZONES[zone].name.toUpperCase().replace(/[^A-Z]/g, '').substring(0, 2)
-        const name = `${template.namePrefix}-${zonePrefix}${String(zoneCounters[zoneKey]).padStart(3, '0')}${envSuffix}`
-        
-        // ============================================================================
-        // IMPROVEMENT: Zone-aware internet-facing determination
-        // Only DMZ and specific perimeter zones should have internet-facing assets
-        // ============================================================================
-        const PERIMETER_ZONES = ['dmz']  // Zones that can have internet-facing assets
-        
-        // An asset is internet-facing ONLY if:
-        // 1. It's in a perimeter zone (DMZ) AND
-        // 2. The template allows it OR zone randomly allows it
-        const isInPerimeter = PERIMETER_ZONES.includes(zone)
-        const templateAllowsInternet = template.internetFacing
-        const zoneAllowsInternet = isInPerimeter && (rng.next() > 0.5)  // 50% of DMZ assets are internet-facing
-        
-        // Final determination: must be in perimeter zone
-        const internetFacing = isInPerimeter && (templateAllowsInternet || zoneAllowsInternet)
-        
-        // Adjust criticality based on zone
-        let criticality = template.criticality
+        const zk = `${t.type}-${zone}`
+        zoneCounters[zk] = (zoneCounters[zk] || 0) + 1
+        const zp = NETWORK_ZONES[zone].name.toUpperCase().replace(/[^A-Z]/g, '').substring(0, 2)
+        const name = `${t.namePrefix}-${zp}${String(zoneCounters[zk]).padStart(3, '0')}${getEnvSuffix(zone)}`
+        const internetFacing = zone === 'dmz' && (t.internetFacing || rng.next() > 0.5)
+        let criticality = t.criticality
         if (zone.startsWith('dev')) criticality = Math.max(1, criticality - 1)
         if (zone === 'pci' || zone === 'hipaa') criticality = 5
         if (zone === 'dr') criticality = Math.min(5, criticality + 1)
-        
+        const bu = rng.pick(BUSINESS_UNITS)
         assets.push({
-          id: `asset-${assetId++}`,
-          name,
-          type: template.type,
-          ip: generateIP(zone),
-          network_zone: zone,
-          criticality,
-          internet_facing: internetFacing,
-          business_unit: businessUnit.name,
-          annual_revenue_exposure: businessUnit.revenue,
-          misconfigurations: generateMisconfigurations(template.misconfigCategories),
-          domain_joined: template.domainJoined,
-          services: template.services,
-          data_sensitivity: template.dataSensitivity,
-          scanStatus: 'pending',
+          id: `asset-${assetId++}`, name, type: t.type,
+          ip: generateIP(zone), network_zone: zone, criticality, internet_facing: internetFacing,
+          business_unit: bu.name, annual_revenue_exposure: bu.revenue,
+          misconfigurations: genMisconfigs(t.misconfigCategories),
+          domain_joined: t.domainJoined, services: t.services as string[],
+          data_sensitivity: t.dataSensitivity, scanStatus: 'pending',
         })
       }
-      
       remaining -= countInZone
     }
   }
-  
-  // Ensure we have exactly 500 assets by adjusting workstation counts
-  const diff = 500 - assets.length
-  if (diff > 0) {
-    // Add more workstations
-    for (let i = 0; i < diff; i++) {
-      const zone = rng.pick(['corp', 'corp-wifi', 'dev-web'] as NetworkZone[])
-      const zoneKey = `workstation-${zone}`
-      zoneCounters[zoneKey] = (zoneCounters[zoneKey] || 0) + 1
-      const businessUnit = rng.pick(BUSINESS_UNITS)
-      
-      assets.push({
-        id: `asset-${assetId++}`,
-        name: `WS-${NETWORK_ZONES[zone].name.toUpperCase().substring(0, 2)}${String(zoneCounters[zoneKey]).padStart(3, '0')}`,
-        type: 'workstation',
-        ip: generateIP(zone),
-        network_zone: zone,
-        criticality: 2,
-        internet_facing: false,
-        business_unit: businessUnit.name,
-        annual_revenue_exposure: businessUnit.revenue,
-        misconfigurations: generateMisconfigurations(['authentication', 'service']),
-        domain_joined: true,
-        services: ['Office', 'Browser'],
-        data_sensitivity: 'user_data',
-        scanStatus: 'pending',
-      })
-    }
+
+  while (assets.length < 500) {
+    const zone = rng.pick(['corp', 'corp-wifi', 'dev-web'] as NetworkZone[])
+    const zk = `ws-pad-${zone}`
+    zoneCounters[zk] = (zoneCounters[zk] || 0) + 1
+    const bu = rng.pick(BUSINESS_UNITS)
+    assets.push({
+      id: `asset-${assetId++}`,
+      name: `WS-${NETWORK_ZONES[zone].name.toUpperCase().substring(0, 2)}${String(zoneCounters[zk]).padStart(3, '0')}`,
+      type: 'workstation', ip: generateIP(zone), network_zone: zone, criticality: 2,
+      internet_facing: false, business_unit: bu.name, annual_revenue_exposure: bu.revenue,
+      misconfigurations: genMisconfigs(['authentication', 'service']),
+      domain_joined: true, services: ['Office', 'Browser'], data_sensitivity: 'user_data', scanStatus: 'pending',
+    })
   }
-  
-  console.log(`Generated ${assets.length} enterprise assets across ${Object.keys(NETWORK_ZONES).length} zones`)
+
   return assets
 }
 
-// ============================================================================
-// MAIN COMPONENT
-// ============================================================================
+// ─── UI HELPERS ───────────────────────────────────────────────────────────────
+
+const ZONE_PILL: Record<string, string> = {
+  'dmz':        'text-red-300 bg-red-950/60 border-red-800',
+  'prod-web':   'text-orange-300 bg-orange-950/60 border-orange-800',
+  'prod-app':   'text-amber-300 bg-amber-950/60 border-amber-800',
+  'prod-db':    'text-red-200 bg-red-950/80 border-red-700',
+  'dev-web':    'text-blue-300 bg-blue-950/60 border-blue-800',
+  'dev-app':    'text-blue-300 bg-blue-950/60 border-blue-800',
+  'dev-db':     'text-violet-300 bg-violet-950/60 border-violet-800',
+  'staging':    'text-teal-300 bg-teal-950/60 border-teal-800',
+  'corp':       'text-emerald-300 bg-emerald-950/60 border-emerald-800',
+  'corp-wifi':  'text-emerald-300 bg-emerald-950/60 border-emerald-800',
+  'restricted': 'text-red-200 bg-red-950/80 border-red-700',
+  'pci':        'text-rose-200 bg-rose-950/80 border-rose-700',
+  'hipaa':      'text-rose-200 bg-rose-950/80 border-rose-700',
+  'mgmt':       'text-slate-300 bg-slate-800 border-slate-700',
+  'security':   'text-slate-300 bg-slate-800 border-slate-700',
+  'cloud-prod': 'text-cyan-300 bg-cyan-950/60 border-cyan-800',
+  'cloud-dev':  'text-sky-300 bg-sky-950/60 border-sky-800',
+  'dr':         'text-stone-300 bg-stone-900 border-stone-700',
+}
+
+const SEV_PILL: Record<string, string> = {
+  critical: 'text-red-400 bg-red-950/60 border-red-800',
+  high:     'text-orange-400 bg-orange-950/60 border-orange-800',
+  medium:   'text-amber-400 bg-amber-950/60 border-amber-800',
+  low:      'text-slate-400 bg-slate-800 border-slate-700',
+}
+
+function zoneName(z: string) { return (NETWORK_ZONES as Record<string, { name: string }>)[z]?.name ?? z }
+
+function ZonePill({ zone }: { zone: string }) {
+  return (
+    <span className={`px-2 py-0.5 rounded text-xs border font-mono ${ZONE_PILL[zone] ?? 'text-slate-400 bg-slate-800 border-slate-700'}`}>
+      {zoneName(zone)}
+    </span>
+  )
+}
+
+function SevPill({ sev }: { sev: string }) {
+  return (
+    <span className={`px-2 py-0.5 rounded text-xs border font-mono uppercase tracking-wider ${SEV_PILL[sev] ?? SEV_PILL.low}`}>
+      {sev}
+    </span>
+  )
+}
+
+function Kpi({ label, value, sub, red }: { label: string; value: string | number; sub?: string; red?: boolean }) {
+  return (
+    <div className={`rounded-xl border p-4 ${red ? 'bg-red-950/20 border-red-900/60' : 'bg-[#0d1117] border-[#21262d]'}`}>
+      <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-1">{label}</div>
+      <div className={`text-2xl font-bold font-mono ${red ? 'text-red-400' : 'text-slate-100'}`}>{value}</div>
+      {sub && <div className="text-xs text-slate-600 mt-0.5">{sub}</div>}
+    </div>
+  )
+}
+
+function Spin() {
+  return (
+    <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+      <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+    </svg>
+  )
+}
+
+function Bar({ pct, color = 'bg-slate-500' }: { pct: number; color?: string }) {
+  return (
+    <div className="h-1.5 bg-[#21262d] rounded-full overflow-hidden">
+      <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
+    </div>
+  )
+}
+
+function RiskBar({ value }: { value: number }) {
+  const pct = Math.min(1, Math.max(0, value)) * 100
+  const color = pct > 66 ? 'bg-gradient-to-r from-red-600 to-red-400' : pct > 33 ? 'bg-gradient-to-r from-orange-600 to-amber-400' : 'bg-gradient-to-r from-emerald-700 to-emerald-500'
+  return <Bar pct={pct} color={color} />
+}
+
+// ─── ENV VIEW ─────────────────────────────────────────────────────────────────
+
+function EnvView({ assets }: { assets: Asset[] }) {
+  const [q, setQ] = useState('')
+  const [zf, setZf] = useState('all')
+
+  const stats = useMemo(() => {
+    const sev = { critical: 0, high: 0, medium: 0, low: 0 }
+    const cat: Record<string, number> = {}
+    assets.forEach(a => a.misconfigurations.forEach(m => {
+      sev[m.severity as keyof typeof sev]++
+      cat[m.category] = (cat[m.category] || 0) + 1
+    }))
+    return { sev, cat, total: assets.reduce((s, a) => s + a.misconfigurations.length, 0) }
+  }, [assets])
+
+  const zones = useMemo(() => {
+    const m: Record<string, number> = {}
+    assets.forEach(a => { m[a.network_zone] = (m[a.network_zone] || 0) + 1 })
+    return m
+  }, [assets])
+
+  const visible = useMemo(() =>
+    assets
+      .filter(a => zf === 'all' || a.network_zone === zf)
+      .filter(a => !q || a.name.toLowerCase().includes(q) || a.type.includes(q) || a.ip.includes(q))
+      .slice(0, 200)
+  , [assets, q, zf])
+
+  const GROUPS = [
+    { label: 'Perimeter', zones: ['dmz'], col: 'text-red-400' },
+    { label: 'Production', zones: ['prod-web', 'prod-app', 'prod-db'], col: 'text-orange-400' },
+    { label: 'Development', zones: ['dev-web', 'dev-app', 'dev-db', 'staging'], col: 'text-blue-400' },
+    { label: 'Corporate', zones: ['corp', 'corp-wifi'], col: 'text-emerald-400' },
+    { label: 'Restricted', zones: ['restricted', 'pci', 'hipaa'], col: 'text-red-300' },
+    { label: 'Infra & Cloud', zones: ['mgmt', 'security', 'cloud-prod', 'cloud-dev', 'dr'], col: 'text-cyan-400' },
+  ]
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-6 gap-3">
+        <Kpi label="Assets" value={assets.length} />
+        <Kpi label="Misconfigs" value={stats.total} />
+        <Kpi label="Critical" value={stats.sev.critical} red />
+        <Kpi label="High" value={stats.sev.high} />
+        <Kpi label="Internet-Exposed" value={assets.filter(a => a.internet_facing).length} />
+        <Kpi label="Active Zones" value={Object.keys(zones).length} />
+      </div>
+
+      {/* Zone heatmap */}
+      <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-5">
+        <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-4">Network Zone Distribution</div>
+        <div className="grid grid-cols-6 gap-3">
+          {GROUPS.map(g => (
+            <div key={g.label} className="space-y-2">
+              <div className={`text-xs font-mono font-semibold ${g.col}`}>{g.label}</div>
+              {g.zones.map(z => {
+                const cnt = zones[z] || 0
+                if (!cnt) return null
+                const exposed = assets.filter(a => a.network_zone === z && a.internet_facing).length
+                const crit = assets.filter(a => a.network_zone === z && a.criticality >= 4).length
+                return (
+                  <button key={z} onClick={() => setZf(zf === z ? 'all' : z)}
+                    className={`w-full text-left p-3 rounded-lg border transition-all ${zf === z ? 'border-slate-500 bg-[#21262d]' : 'border-[#21262d] bg-[#161b22] hover:border-slate-600'}`}>
+                    <div className={`text-xs font-mono mb-1 ${ZONE_PILL[z]?.split(' ')[0] ?? 'text-slate-400'}`}>{zoneName(z)}</div>
+                    <div className="text-xl font-bold font-mono text-slate-100">{cnt}</div>
+                    <div className="text-xs mt-1 space-x-1">
+                      {exposed > 0 && <span className="text-red-500">{exposed} exp</span>}
+                      {crit > 0 && <span className="text-orange-500">{crit} crit</span>}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Stats row */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-5">
+          <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-3">Severity</div>
+          <div className="space-y-2">
+            {(['critical', 'high', 'medium', 'low'] as const).map(s => (
+              <div key={s} className="flex items-center gap-3">
+                <div className="w-14 text-xs font-mono text-slate-500">{s}</div>
+                <div className="flex-1">
+                  <Bar pct={(stats.sev[s] / stats.total) * 100}
+                    color={s === 'critical' ? 'bg-red-500' : s === 'high' ? 'bg-orange-500' : s === 'medium' ? 'bg-amber-500' : 'bg-slate-600'} />
+                </div>
+                <div className="w-7 text-xs font-mono text-right text-slate-400">{stats.sev[s]}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-5">
+          <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-3">Categories</div>
+          <div className="space-y-2">
+            {Object.entries(stats.cat).sort((a, b) => b[1] - a[1]).map(([cat, n]) => (
+              <div key={cat} className="flex items-center gap-3">
+                <div className="w-20 text-xs font-mono capitalize text-slate-500">{cat}</div>
+                <div className="flex-1"><Bar pct={(n / stats.total) * 100} /></div>
+                <div className="w-7 text-xs font-mono text-right text-slate-400">{n}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="bg-[#0d1117] border border-[#21262d] rounded-xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-[#21262d]">
+          <span className="text-xs font-mono text-slate-600">
+            {zf !== 'all' && <><span className="text-slate-300">{zoneName(zf)}</span> · </>}
+            {visible.length} assets shown
+          </span>
+          <div className="flex items-center gap-2">
+            {zf !== 'all' && (
+              <button onClick={() => setZf('all')} className="text-xs font-mono text-slate-500 hover:text-slate-300">✕ clear</button>
+            )}
+            <input value={q} onChange={e => setQ(e.target.value.toLowerCase())} placeholder="filter…"
+              className="bg-[#161b22] border border-[#21262d] rounded-lg px-3 py-1.5 text-xs font-mono text-slate-300 placeholder-slate-700 focus:outline-none focus:border-slate-600 w-40" />
+          </div>
+        </div>
+        <div className="overflow-auto max-h-96">
+          <table className="w-full text-xs font-mono">
+            <thead className="bg-[#161b22] sticky top-0">
+              <tr>
+                {['Asset', 'Type', 'Zone', 'IP', 'BU', 'Crit', 'Findings'].map(h => (
+                  <th key={h} className="text-left px-4 py-2 text-slate-600 font-normal">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map(a => (
+                <tr key={a.id} className="border-t border-[#21262d] hover:bg-[#161b22]">
+                  <td className="px-4 py-2 text-slate-200 font-semibold">{a.name}</td>
+                  <td className="px-4 py-2 text-slate-500 capitalize">{a.type.replace(/_/g, ' ')}</td>
+                  <td className="px-4 py-2"><ZonePill zone={a.network_zone} /></td>
+                  <td className="px-4 py-2 text-slate-500">{a.ip}</td>
+                  <td className="px-4 py-2 text-slate-500">{a.business_unit}</td>
+                  <td className="px-4 py-2">
+                    <div className="flex gap-0.5 items-center">
+                      {[1,2,3,4,5].map(n => (
+                        <div key={n} className={`w-1.5 h-3 rounded-sm ${n <= a.criticality ? 'bg-red-500' : 'bg-[#21262d]'}`} />
+                      ))}
+                    </div>
+                  </td>
+                  <td className="px-4 py-2">
+                    <div className="flex gap-1">
+                      {a.misconfigurations.map(m => (
+                        <span key={m.id} title={m.title}
+                          className={`w-2 h-2 rounded-full ${m.severity === 'critical' ? 'bg-red-500' : m.severity === 'high' ? 'bg-orange-500' : m.severity === 'medium' ? 'bg-amber-500' : 'bg-slate-600'}`} />
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── SCAN VIEW ────────────────────────────────────────────────────────────────
+
+function ScanView({ scanJob, scanLoading, onScan }: { scanJob: ScanJob | null; scanLoading: boolean; onScan: () => void }) {
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-4 gap-3">
+        <Kpi label="Status" value={scanJob?.status ?? 'idle'} />
+        <Kpi label="Progress" value={`${Math.round(scanJob?.progress ?? 0)}%`} />
+        <Kpi label="Targets" value={scanJob?.targetCount ?? 0} />
+        <Kpi label="Findings" value={scanJob?.summary?.totalMisconfigurations ?? 0} red />
+      </div>
+
+      {scanJob?.status === 'running' && (
+        <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-5">
+          <div className="flex justify-between mb-2">
+            <span className="text-xs font-mono text-slate-600">Scanning {scanJob.targetCount} targets</span>
+            <span className="text-xs font-mono text-blue-400">{Math.round(scanJob.progress)}%</span>
+          </div>
+          <div className="h-2 bg-[#21262d] rounded-full overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-blue-600 to-cyan-400 rounded-full transition-all" style={{ width: `${scanJob.progress}%` }} />
+          </div>
+        </div>
+      )}
+
+      {scanJob?.summary && (
+        <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-5">
+          <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-4">Scan Results</div>
+          <div className="grid grid-cols-5 gap-4 text-center">
+            {[
+              { label: 'Critical', v: scanJob.summary.criticalCount, c: 'text-red-400' },
+              { label: 'High', v: scanJob.summary.highCount, c: 'text-orange-400' },
+              { label: 'Medium', v: scanJob.summary.mediumCount, c: 'text-amber-400' },
+              { label: 'Low', v: scanJob.summary.lowCount, c: 'text-slate-400' },
+              { label: 'Scanned', v: scanJob.summary.successCount, c: 'text-emerald-400' },
+            ].map(({ label, v, c }) => (
+              <div key={label}>
+                <div className={`text-3xl font-bold font-mono ${c}`}>{v}</div>
+                <div className="text-xs text-slate-600 font-mono mt-1">{label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-5">
+        <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-4">Scanner Optimizations</div>
+        <div className="grid grid-cols-3 gap-3">
+          {[
+            { icon: '⚡', title: 'Batched SSH Commands', sub: '20+ cmds per connection' },
+            { icon: '🔄', title: 'Connection Pooling', sub: 'ControlMaster multiplexing' },
+            { icon: '🎯', title: 'Host Discovery', sub: '100ms vs 30s dead-host skip' },
+            { icon: '💾', title: 'Result Caching', sub: 'Skip unchanged hosts' },
+            { icon: '📊', title: 'Adaptive Rate Limit', sub: 'AIMD congestion control' },
+            { icon: '🏆', title: 'Priority Queue', sub: 'Business-impact ordering' },
+          ].map(({ icon, title, sub }) => (
+            <div key={title} className="flex items-start gap-3 p-3 bg-[#161b22] border border-[#21262d] rounded-lg">
+              <span className="text-lg">{icon}</span>
+              <div>
+                <div className="text-xs font-mono text-slate-300">{title}</div>
+                <div className="text-xs text-slate-600 mt-0.5">{sub}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <button onClick={onScan} disabled={scanLoading}
+        className={`w-full py-3 rounded-xl font-mono text-sm border transition-all flex items-center justify-center gap-2 ${scanLoading ? 'border-[#21262d] text-slate-600 cursor-not-allowed bg-transparent' : 'border-blue-800 text-blue-400 bg-blue-950/20 hover:bg-blue-950/40'}`}>
+        {scanLoading ? <><Spin />Scanning…</> : '▶  Run Network Scan'}
+      </button>
+    </div>
+  )
+}
+
+// ─── ANALYSIS VIEW ────────────────────────────────────────────────────────────
+
+function AnalysisView({ result, loading, status, onAnalyze }: { result: AnalysisResult | null; loading: boolean; status: string; onAnalyze: () => void }) {
+  if (!result) {
+    return (
+      <div className="space-y-5">
+        <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-12 text-center">
+          <div className="text-5xl mb-4">🕸️</div>
+          <div className="text-slate-300 font-mono mb-1">GNN + Bayesian + MCTS Analysis Engine</div>
+          <div className="text-xs text-slate-600 font-mono mb-6">Graph Neural Networks · Bayesian Inference · Monte Carlo Tree Search · LLM Validation</div>
+          {status && (
+            <div className="mb-5 inline-block text-xs font-mono text-amber-400 bg-amber-950/30 border border-amber-900/60 rounded-lg px-4 py-2">{status}</div>
+          )}
+          <div>
+            <button onClick={onAnalyze} disabled={loading}
+              className={`px-8 py-3 rounded-xl font-mono text-sm border transition-all flex items-center gap-2 mx-auto ${loading ? 'border-[#21262d] text-slate-600 cursor-not-allowed' : 'border-red-800 text-red-400 bg-red-950/20 hover:bg-red-950/40'}`}>
+              {loading ? <><Spin />Analyzing…</> : '▶  Run Attack Analysis'}
+            </button>
+          </div>
+        </div>
+        <div className="grid grid-cols-4 gap-3">
+          {[
+            { n: '01', col: 'border-l-blue-600 text-blue-400', label: 'GNN Embedding', desc: 'O(N×d) graph attention — node feature extraction' },
+            { n: '02', col: 'border-l-violet-600 text-violet-400', label: 'Bayesian Inference', desc: 'Multi-source evidence fusion for edge probabilities' },
+            { n: '03', col: 'border-l-emerald-600 text-emerald-400', label: 'MCTS Path Discovery', desc: 'UCB1-guided search — O(E log V) optimal paths' },
+            { n: '04', col: 'border-l-red-600 text-red-400', label: 'LLM Validation', desc: 'Batch narrative — 5 paths per API call' },
+          ].map(({ n, col, label, desc }) => (
+            <div key={n} className={`bg-[#0d1117] border border-[#21262d] border-l-2 ${col} rounded-xl p-4 flex gap-3`}>
+              <div className="text-2xl font-black font-mono text-[#21262d]">{n}</div>
+              <div>
+                <div className={`text-xs font-mono font-bold ${col.split(' ')[1]}`}>{label}</div>
+                <div className="text-xs text-slate-600 mt-1">{desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-5 gap-3">
+        <Kpi label="Nodes" value={result.graph_stats.total_nodes} />
+        <Kpi label="Edges" value={result.graph_stats.total_edges} />
+        <Kpi label="Branching Factor" value={result.graph_stats.avg_branching_factor} />
+        <Kpi label="Entry Points" value={result.entry_points.length} />
+        <Kpi label="Attack Paths" value={result.attack_paths.length} red />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-5">
+          <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-3">Timing — {result.timing.total}ms</div>
+          <div className="space-y-2">
+            {[
+              { label: 'Node Build', v: result.timing.nodes, c: 'bg-blue-500' },
+              { label: 'Edge Eval', v: result.timing.edges, c: 'bg-violet-500' },
+              { label: 'PageRank', v: result.timing.pagerank, c: 'bg-emerald-500' },
+              { label: 'Path Find', v: result.timing.paths, c: 'bg-amber-500' },
+              { label: 'LLM Valid', v: result.timing.validation, c: 'bg-red-500' },
+            ].map(({ label, v, c }) => (
+              <div key={label} className="flex items-center gap-3">
+                <div className="w-16 text-xs font-mono text-slate-500">{label}</div>
+                <div className="flex-1"><Bar pct={(v / result.timing.total) * 100} color={c} /></div>
+                <div className="w-14 text-xs font-mono text-right text-slate-400">{v}ms</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-5">
+          <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-3">Hybrid Edges</div>
+          <div className="space-y-3">
+            {[
+              { label: 'Pattern', v: result.edge_stats.pattern_edges, c: 'text-blue-400' },
+              { label: 'LLM', v: result.edge_stats.llm_edges, c: 'text-violet-400' },
+              { label: 'Total', v: result.edge_stats.total_edges, c: 'text-slate-100' },
+            ].map(({ label, v, c }) => (
+              <div key={label} className="flex justify-between items-center">
+                <span className={`text-xs font-mono ${c}`}>{label}</span>
+                <span className={`text-sm font-mono font-bold ${c}`}>{v}</span>
+              </div>
+            ))}
+            <div className="h-2 bg-[#21262d] rounded-full overflow-hidden mt-2">
+              <div className="h-full bg-gradient-to-r from-blue-600 to-violet-500 rounded-full"
+                style={{ width: `${(result.edge_stats.pattern_edges / Math.max(result.edge_stats.total_edges, 1)) * 100}%` }} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-[#0d1117] border border-[#21262d] rounded-xl overflow-hidden">
+        <div className="px-5 py-3 border-b border-[#21262d] text-xs font-mono text-slate-600 uppercase tracking-widest">Entry Points — LLM Ranked</div>
+        <div className="divide-y divide-[#21262d]">
+          {result.entry_points.slice(0, 6).map((ep, i) => (
+            <div key={ep.node_id} className="px-5 py-3 flex items-start gap-4">
+              <div className="w-6 h-6 bg-red-950/60 border border-red-800 rounded flex items-center justify-center text-xs font-mono font-bold text-red-400 shrink-0">{i + 1}</div>
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-2 mb-0.5">
+                  <span className="text-sm font-mono font-semibold text-slate-200">{ep.asset_name}</span>
+                  <span className="text-xs font-mono text-orange-400">{ep.misconfig_title}</span>
+                </div>
+                <div className="text-xs text-slate-500">{ep.reasoning}</div>
+                <div className="text-xs text-red-300 mt-0.5">Value: {ep.attacker_value}</div>
+              </div>
+              <div className="text-xs font-mono text-slate-600 shrink-0 whitespace-nowrap">PR {ep.pagerank_score.toFixed(4)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-5">
+          <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-3">Critical Assets</div>
+          <div className="space-y-2">
+            {result.critical_assets.map((ca, i) => (
+              <div key={ca.asset_id} className="flex items-center gap-3 p-2.5 bg-[#161b22] border border-[#21262d] rounded-lg">
+                <span className="text-xs font-mono text-slate-600 w-4">{i + 1}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-mono text-slate-300 truncate">{ca.asset_name}</div>
+                  <div className="text-xs text-slate-600 truncate">{ca.reason}</div>
+                </div>
+                <span className="text-xs font-mono text-violet-400 shrink-0">{ca.paths_to_it} paths</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="bg-[#0d1117] border border-red-900/30 rounded-xl p-5">
+          <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-3">Key Insights</div>
+          <ul className="space-y-2">
+            {result.key_insights.map((ins, i) => (
+              <li key={i} className="flex gap-2 text-xs">
+                <span className="text-red-600 shrink-0 mt-0.5">▸</span>
+                <span className="text-slate-400">{ins}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── PATHS VIEW ───────────────────────────────────────────────────────────────
+
+function PathsView({ result }: { result: AnalysisResult | null }) {
+  const [sel, setSel] = useState<number | null>(null)
+
+  if (!result?.attack_paths?.length) {
+    return (
+      <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-20 text-center">
+        <div className="text-3xl mb-3">🔍</div>
+        <div className="text-slate-600 font-mono">Run analysis first to discover attack paths</div>
+      </div>
+    )
+  }
+
+  const path = sel !== null ? result.attack_paths[sel] : null
+
+  return (
+    <div className="grid grid-cols-3 gap-4" style={{ minHeight: 600 }}>
+      {/* List */}
+      <div className="bg-[#0d1117] border border-[#21262d] rounded-xl overflow-hidden flex flex-col">
+        <div className="px-4 py-3 border-b border-[#21262d] text-xs font-mono text-slate-600 shrink-0">
+          {result.attack_paths.length} unique paths discovered
+        </div>
+        <div className="overflow-y-auto flex-1 divide-y divide-[#21262d]">
+          {result.attack_paths.map((p, i) => {
+            const risk = Math.min(1, Math.max(0, p.final_risk_score))
+            const cats = [...new Set(p.nodes.map(n => n.misconfig_category))]
+            return (
+              <button key={p.path_id} onClick={() => setSel(i)}
+                className={`w-full text-left p-4 hover:bg-[#161b22] transition-colors ${sel === i ? 'bg-red-950/10 border-l-2 border-red-600 pl-[14px]' : ''}`}>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs font-mono font-bold text-slate-300">{p.path_id}</span>
+                  <span className={`text-xs font-mono px-2 py-0.5 rounded border ${risk > 0.5 ? 'text-red-400 border-red-900 bg-red-950/30' : 'text-amber-400 border-amber-900 bg-amber-950/30'}`}>
+                    {Math.round(risk * 100)}%
+                  </span>
+                </div>
+                <div className="text-xs text-slate-600 font-mono mb-2">{p.nodes.length} steps · {[...new Set(p.nodes.map(n => n.asset_id))].length} assets</div>
+                <RiskBar value={risk} />
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {cats.map(c => (
+                    <span key={c} className={`text-xs px-1.5 py-0.5 rounded border font-mono ${
+                      c === 'authentication' ? 'text-red-400 border-red-900 bg-red-950/20' :
+                      c === 'authorization'  ? 'text-violet-400 border-violet-900 bg-violet-950/20' :
+                      c === 'network'        ? 'text-blue-400 border-blue-900 bg-blue-950/20' :
+                      'text-slate-400 border-[#21262d]'
+                    }`}>{c}</span>
+                  ))}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Detail */}
+      <div className="col-span-2">
+        {!path ? (
+          <div className="bg-[#0d1117] border border-[#21262d] rounded-xl h-full flex items-center justify-center">
+            <div className="text-slate-700 font-mono text-sm">← Select a path</div>
+          </div>
+        ) : (
+          <div className="bg-[#0d1117] border border-[#21262d] rounded-xl overflow-hidden flex flex-col">
+            {/* Header */}
+            <div className="px-5 py-4 border-b border-[#21262d] flex items-center justify-between shrink-0">
+              <div>
+                <div className="font-mono font-bold text-slate-100">{path.path_id}</div>
+                <div className="text-xs text-slate-600 font-mono mt-0.5">
+                  {path.nodes.length} steps · {[...new Set(path.nodes.map(n => n.asset_id))].length} unique assets
+                </div>
+              </div>
+              <div className="flex gap-5 text-xs font-mono text-right">
+                <div><div className="text-slate-600">Prob</div><div className="text-blue-400">{Math.round(path.path_probability * 100)}%</div></div>
+                <div><div className="text-slate-600">Realism</div><div className="text-emerald-400">{Math.round(path.realism_score * 100)}%</div></div>
+                <div><div className="text-slate-600">Risk</div><div className="text-red-400 font-bold">{Math.round(Math.min(1, path.final_risk_score) * 100)}%</div></div>
+              </div>
+            </div>
+
+            {/* Risk bar */}
+            <div className="px-5 py-2 border-b border-[#21262d] bg-[#0a0f14] shrink-0">
+              <RiskBar value={Math.min(1, path.final_risk_score)} />
+            </div>
+
+            {/* Kill chain */}
+            <div className="px-5 py-3 border-b border-[#21262d] flex gap-2 flex-wrap shrink-0">
+              {path.kill_chain.map((phase, i) => (
+                <span key={i} className="text-xs font-mono px-2 py-0.5 bg-[#161b22] border border-[#21262d] rounded text-slate-400">
+                  {i + 1}. {phase}
+                </span>
+              ))}
+            </div>
+
+            {/* Chain */}
+            <div className="p-5 border-b border-[#21262d] overflow-y-auto flex-1 space-y-3 max-h-64">
+              {path.nodes.map((node, i) => {
+                const edge = path.edges[i]
+                const isFirst = i === 0
+                const isLast = i === path.nodes.length - 1
+                return (
+                  <div key={i} className="flex gap-3">
+                    <div className="flex flex-col items-center shrink-0">
+                      <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-mono font-bold border ${
+                        isFirst ? 'bg-red-950/60 border-red-700 text-red-300' :
+                        isLast  ? 'bg-violet-950/60 border-violet-700 text-violet-300' :
+                        'bg-[#161b22] border-[#21262d] text-slate-500'
+                      }`}>{i + 1}</div>
+                      {!isLast && <div className="w-px flex-1 bg-[#21262d] my-1 min-h-3" />}
+                    </div>
+                    <div className="flex-1 pb-2">
+                      <div className="flex flex-wrap items-center gap-2 mb-1">
+                        <span className="text-sm font-mono font-semibold text-slate-200">{node.asset_name}</span>
+                        <ZonePill zone={node.asset_zone} />
+                        <span className="text-xs font-mono text-slate-600 capitalize">{node.asset_type.replace(/_/g, ' ')}</span>
+                      </div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs text-orange-400 font-mono">{node.misconfig_title}</span>
+                        <SevPill sev={node.misconfig_category} />
+                      </div>
+                      {edge && (
+                        <div className="text-xs font-mono bg-[#161b22] border border-[#21262d] rounded px-3 py-1.5 text-slate-500 flex items-center gap-2">
+                          <span>→ {Math.round(edge.probability * 100)}% · {edge.technique}</span>
+                          <span className={`px-1.5 py-0.5 rounded border text-xs ${edge.edge_type === 'llm' || edge.edge_type === 'gnn_bayesian' ? 'text-violet-400 border-violet-900' : 'text-blue-400 border-blue-900'}`}>
+                            {edge.edge_type === 'gnn_bayesian' ? 'Bayesian' : edge.edge_type === 'llm' ? 'LLM' : 'Pattern'}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Narrative + impact */}
+            <div className="grid grid-cols-2 divide-x divide-[#21262d] shrink-0">
+              <div className="p-4">
+                <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-2">Narrative</div>
+                <p className="text-xs text-slate-400 leading-relaxed">{path.narrative || '—'}</p>
+              </div>
+              <div className="p-4">
+                <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-2">Business Impact</div>
+                <p className="text-xs text-red-300 leading-relaxed">{path.business_impact || '—'}</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── ALGO VIEW ────────────────────────────────────────────────────────────────
+
+function AlgoView() {
+  return (
+    <div className="space-y-4">
+      <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-6">
+        <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-6">Scalable Hybrid Algorithm — 5-Phase Pipeline</div>
+        <div className="space-y-4">
+          {[
+            { n: '01', col: 'border-blue-600 text-blue-400', label: 'Build Nodes — O(n)', desc: 'One node per (asset, misconfiguration) pair. GNN feature extraction on graph structure.' },
+            { n: '02', col: 'border-violet-600 text-violet-400', label: 'Edge Evaluation — O(n²) fast', desc: 'Pattern templates + zone reachability matrix. No per-edge LLM calls. Bayesian priors applied immediately.' },
+            { n: '03', col: 'border-emerald-600 text-emerald-400', label: 'PageRank — O(iterations × E)', desc: 'Node importance via probability-weighted adjacency. GNN attention weights refine scores.' },
+            { n: '04', col: 'border-amber-600 text-amber-400', label: 'MCTS Discovery — O(E log V)', desc: 'UCB1-guided Monte Carlo tree search. −log(prob) as edge cost. Explores high-value paths first.' },
+            { n: '05', col: 'border-red-600 text-red-400', label: 'Batch LLM Validation — O(paths / 5)', desc: '5 attack paths validated per LLM API call. Generates narrative, scores realism, assesses business impact.' },
+          ].map(({ n, col, label, desc }) => (
+            <div key={n} className={`border-l-2 pl-4 ${col}`}>
+              <div className="flex items-center gap-3 mb-1">
+                <span className="text-xs font-mono text-slate-600">{n}</span>
+                <span className={`text-sm font-mono font-bold ${col.split(' ')[1]}`}>{label}</span>
+              </div>
+              <p className="text-xs text-slate-500">{desc}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-5">
+          <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-3">Before — Per-Edge LLM</div>
+          <div className="space-y-1.5 text-xs font-mono">
+            <div className="text-red-400">✕ 150 nodes → 22,500 edge evals</div>
+            <div className="text-red-400">✕ 22,500 LLM API calls</div>
+            <div className="text-red-400">✕ 30+ minutes per run</div>
+            <div className="text-red-400">✕ 15–30% false positive rate</div>
+          </div>
+        </div>
+        <div className="bg-[#0d1117] border border-emerald-900/40 rounded-xl p-5">
+          <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-3">After — Pattern + Batch</div>
+          <div className="space-y-1.5 text-xs font-mono">
+            <div className="text-emerald-400">✓ Pattern edges — instant</div>
+            <div className="text-emerald-400">✓ 2–4 LLM calls total (batched)</div>
+            <div className="text-emerald-400">✓ 5–15 seconds per run</div>
+            <div className="text-emerald-400">✓ 5–10% false positive rate</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-[#0d1117] border border-[#21262d] rounded-xl p-5">
+        <div className="text-xs font-mono text-slate-600 uppercase tracking-widest mb-3">Module Map</div>
+        <div className="grid grid-cols-3 gap-5 text-xs font-mono">
+          {[
+            { g: 'Core Scanners', f: ['optimized-scanner.ts', 'high-perf-scanner.ts', 'zone-detection.ts', 'fp-reduction.ts'] },
+            { g: 'Scalable Architecture', f: ['scanner-orchestrator.ts', 'result-streamer.ts', 'distributed-coordinator.ts', 'adaptive-rate-limiter.ts', 'scan-scheduler.ts'] },
+            { g: 'Analysis Engine', f: ['enhanced-attack-engine.ts', 'llm-realism-engine.ts', 'complete-hybrid-engine.ts', 'network-topology-collector.ts'] },
+          ].map(({ g, f }) => (
+            <div key={g}>
+              <div className="text-slate-500 mb-2">{g}</div>
+              {f.map(file => <div key={file} className="text-cyan-700 py-0.5">{file}</div>)}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── MAIN ─────────────────────────────────────────────────────────────────────
+
+type View = 'env' | 'scan' | 'analysis' | 'paths' | 'algo'
 
 export default function BraveGuardian() {
-  // FIX: Use lazy initializer — prevents blocking module parse on load
-  const [assets, setAssets] = useState<Asset[]>(() => generateEnterpriseAssets())
+  const [assets] = useState<Asset[]>(() => generateEnterpriseAssets())
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [status, setStatus] = useState('')
-  const [view, setView] = useState<'env' | 'scan' | 'analysis' | 'paths' | 'algo'>('env')
-  const [selectedPath, setSelectedPath] = useState<number | null>(null)
-  
-  // Scanner state
+  const [view, setView] = useState<View>('env')
   const [scanJob, setScanJob] = useState<ScanJob | null>(null)
   const [scanLoading, setScanLoading] = useState(false)
-  const [scanResults, setScanResults] = useState<Array<{ host: string; misconfigurations: number; success: boolean }>>([])
 
-  // Attack Analysis
   const runAnalysis = useCallback(async () => {
     setLoading(true)
     setResult(null)
-    setStatus('Initializing attack analysis...')
+    setStatus('Building attack graph…')
 
-    // Create AbortController for timeout
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => {
-      controller.abort()
-      setStatus('Request timed out - please try again')
-      setLoading(false)
-    }, 120000) // 2 minute timeout
-
-    // Helper function to make the API request
-    const makeRequest = async (retryCount = 0): Promise<Response | null> => {
-      try {
-        const response = await fetch('/api/attack-analysis', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            environment: {
-              // FIX: Send all assets — server caps to 80 representative ones.
-              // But still limit payload: send only needed fields, no redundant data.
-              assets: assets.map(a => ({
-                id: a.id,
-                name: a.name,
-                type: a.type,
-                ip: a.ip,
-                zone: a.network_zone,
-                internet_facing: a.internet_facing,
-                criticality: a.criticality,
-                domain_joined: a.domain_joined,
-                services: a.services,
-                data_sensitivity: a.data_sensitivity,
-                misconfigurations: a.misconfigurations.map(m => ({
-                  id: m.id,
-                  title: m.title,
-                  description: m.description,
-                  category: m.category,
-                  severity: m.severity
-                }))
-              }))
-            }
-          }),
-          signal: controller.signal
-        })
-        return response
-      } catch (fetchError) {
-        // Network error or abort
-        if (fetchError instanceof Error && fetchError.name === 'AbortError') {
-          throw fetchError
-        }
-        // Retry on network errors
-        if (retryCount < 2) {
-          console.log(`Network error, retrying... (${retryCount + 1}/2)`)
-          setStatus(`Connection issue, retrying... (${retryCount + 1}/2)`)
-          await new Promise(r => setTimeout(r, 1000))
-          return makeRequest(retryCount + 1)
-        }
-        throw fetchError
-      }
-    }
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => { ctrl.abort(); setStatus('Timed out — please retry'); setLoading(false) }, 120000)
 
     try {
-      setStatus('Building attack graph...')
-      
-      const response = await makeRequest()
+      setStatus('Running GNN + Bayesian + MCTS…')
+      const res = await fetch('/api/attack-analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          environment: {
+            assets: assets.map(a => ({
+              id: a.id, name: a.name, type: a.type, ip: a.ip,
+              zone: a.network_zone, internet_facing: a.internet_facing,
+              criticality: a.criticality, domain_joined: a.domain_joined,
+              services: a.services, data_sensitivity: a.data_sensitivity,
+              misconfigurations: a.misconfigurations.map(m => ({
+                id: m.id, title: m.title, description: m.description,
+                category: m.category, severity: m.severity,
+              }))
+            }))
+          }
+        }),
+        signal: ctrl.signal,
+      })
 
-      if (!response) {
-        setStatus('Failed to connect to server - please try again')
-        setLoading(false)
-        return
-      }
-
-      clearTimeout(timeoutId)
-
-      if (response.ok) {
-        const data = await response.json()
-        
-        // Check if API returned an error in the response body
-        if (data.error) {
-          const errorMsg = data.message || data.error || 'Unknown error from server'
-          setStatus(`Error: ${errorMsg}`)
-          console.error('API returned error:', data)
-          setResult(null)
-        } else if (data.attack_paths && data.attack_paths.length > 0) {
-          setResult(data)
-          setStatus('')
-        } else if (data.key_insights && data.key_insights.length > 0) {
-          // No paths but got insights - show what we have
-          setStatus(data.key_insights[0])
-          setResult(data)
-        } else {
-          setStatus('No attack paths found - check asset configurations')
-          setResult(data)
-        }
+      clearTimeout(timer)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.error) { setStatus(`Error: ${data.message ?? data.error}`) }
+        else { setResult(data); setStatus(''); setView('analysis') }
       } else {
-        // HTTP error response
-        let errorMsg = `Server error (${response.status})`
-        
-        // Special handling for 502 - server might be warming up
-        if (response.status === 502 || response.status === 503) {
-          errorMsg = 'Server is warming up - please wait a moment and try again'
-        }
-        
-        try {
-          const errorData = await response.json()
-          errorMsg = errorData.message || errorData.error || errorMsg
-          console.error('Server error details:', errorData)
-        } catch {
-          // Couldn't parse error response
-          console.error('Could not parse error response, status:', response.status)
-        }
-        setStatus(`Failed: ${errorMsg}`)
+        const err = await res.json().catch(() => ({}))
+        setStatus(`Server error ${res.status}: ${err.message ?? 'unknown'}`)
       }
     } catch (e: unknown) {
-      clearTimeout(timeoutId)
-      console.error(e)
-      
-      if (e instanceof Error && e.name === 'AbortError') {
-        setStatus('Request timed out - server may be warming up, please try again')
-      } else {
-        setStatus(`Error: ${e instanceof Error ? e.message : 'Unknown error'}`)
-      }
+      clearTimeout(timer)
+      if (e instanceof Error && e.name === 'AbortError') setStatus('Request timed out — retry')
+      else setStatus(`Error: ${e instanceof Error ? e.message : 'unknown'}`)
     }
 
     setLoading(false)
   }, [assets])
 
-  // Scanner
   const runScan = useCallback(async () => {
     setScanLoading(true)
-    setScanResults([])
-    setAssets(prev => prev.map(a => ({ ...a, scanStatus: 'pending' as const })))
+    const targets = [...assets].sort((a, b) => b.criticality - a.criticality).slice(0, 100)
 
     try {
-      // FIX: Cap scan targets — sending 500 assets causes huge request + slow server processing
-      const scanTargets = assets
-        .sort((a, b) => b.criticality - a.criticality || (a.internet_facing ? -1 : 1))
-        .slice(0, 100)
-
-      // Start scan
-      const startResponse = await fetch('/api/scanner', {
+      const res = await fetch('/api/scanner', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'scan',
-          targets: scanTargets.map(a => ({
-            id: a.id,
-            host: a.ip,
-            ip: a.ip,
-            hostname: a.name,
-            criticality: a.criticality,
-            internetFacing: a.internet_facing,
-            zone: a.network_zone,
+          targets: targets.map(a => ({
+            id: a.id, host: a.ip, ip: a.ip, hostname: a.name,
+            criticality: a.criticality, internetFacing: a.internet_facing, zone: a.network_zone,
           })),
-          options: { priority: 'medium' }
-        })
+          options: { priority: 'medium' },
+        }),
       })
 
-      if (startResponse.ok) {
-        const { jobId } = await startResponse.json()
-        
-        // Poll for results
-        let completed = false
-        while (!completed) {
-          await new Promise(r => setTimeout(r, 500))
-          
-          const statusResponse = await fetch(`/api/scanner?jobId=${jobId}`)
-          if (statusResponse.ok) {
-            const { job } = await statusResponse.json()
+      if (res.ok) {
+        const { jobId } = await res.json()
+        let done = false
+        while (!done) {
+          await new Promise(r => setTimeout(r, 600))
+          const poll = await fetch(`/api/scanner?jobId=${jobId}`)
+          if (poll.ok) {
+            const { job } = await poll.json()
             setScanJob(job)
-            
-            if (job.status === 'completed' || job.status === 'failed') {
-              completed = true
-              
-              // Update assets with scan results
-              setAssets(prev => prev.map(a => ({ ...a, scanStatus: 'completed' as const })))
-              
-              // Set scan results
-              setScanResults(job.results?.map((r: any) => ({
-                host: r.host,
-                misconfigurations: r.misconfigurations?.length || 0,
-                success: r.success
-              })) || [])
-            }
+            if (job.status === 'completed' || job.status === 'failed') done = true
           }
         }
       }
-    } catch (e) {
-      console.error(e)
-    }
+    } catch (e) { console.error(e) }
 
     setScanLoading(false)
   }, [assets])
 
-  const stats = useMemo(() => {
-    const totalMisconfigs = assets.reduce((s, a) => s + a.misconfigurations.length, 0)
-    const byCat: Record<string, number> = {}
-    const bySeverity: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 }
-    
-    assets.forEach(a => a.misconfigurations.forEach(m => {
-      byCat[m.category] = (byCat[m.category] || 0) + 1
-      bySeverity[m.severity] = (bySeverity[m.severity] || 0) + 1
-    }))
-    
-    return { totalAssets: assets.length, totalMisconfigs, byCat, bySeverity }
-  }, [assets])
+  const NAV: { id: View; label: string }[] = [
+    { id: 'env', label: 'Environment' },
+    { id: 'scan', label: 'Scanner' },
+    { id: 'analysis', label: 'Analysis' },
+    { id: 'paths', label: 'Attack Paths' },
+    { id: 'algo', label: 'Algorithm' },
+  ]
 
   return (
-    <div className="min-h-screen bg-slate-900 text-white">
-      {/* Header */}
-      <header className="bg-slate-800 border-b border-slate-700 sticky top-0 z-50">
-        <div className="max-w-[1600px] mx-auto px-6 py-4 flex items-center justify-between">
+    <div className="min-h-screen bg-[#010409] text-slate-100" style={{ fontFamily: 'ui-monospace, "JetBrains Mono", "Fira Code", monospace' }}>
+      {/* ── Header ── */}
+      <header className="bg-[#0d1117] border-b border-[#21262d] sticky top-0 z-50">
+        <div className="max-w-[1600px] mx-auto px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-8">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-gradient-to-br from-red-600 to-orange-600 rounded-lg flex items-center justify-center">
-                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              <div className="w-8 h-8 bg-gradient-to-br from-red-700 to-red-500 rounded-lg flex items-center justify-center shrink-0">
+                <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                 </svg>
               </div>
               <div>
-                <h1 className="text-lg font-bold">Brave Guardian</h1>
-                <p className="text-xs text-slate-400">Scalable Hybrid Attack Analysis</p>
+                <div className="text-sm font-bold tracking-tight text-slate-100">BRAVE GUARDIAN</div>
+                <div className="text-xs text-slate-600">v3.0 · GNN+Bayesian+MCTS</div>
               </div>
             </div>
 
-            <nav className="flex gap-1">
-              {(['env', 'scan', 'analysis', 'paths', 'algo'] as const).map(v => (
-                <button
-                  key={v}
-                  onClick={() => setView(v)}
-                  className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
-                    view === v ? 'bg-red-600 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-700'
-                  }`}
-                >
-                  {v === 'env' ? 'Environment' : v === 'scan' ? 'Scanner' : v === 'analysis' ? 'Analysis' : v === 'paths' ? 'Paths' : 'Algorithm'}
+            <nav className="flex gap-0.5">
+              {NAV.map(n => (
+                <button key={n.id} onClick={() => setView(n.id)}
+                  className={`px-3 py-1.5 text-xs rounded-md transition-colors relative ${view === n.id ? 'bg-[#21262d] text-slate-100' : 'text-slate-500 hover:text-slate-300 hover:bg-[#161b22]'}`}>
+                  {n.label}
+                  {n.id === 'paths' && result?.attack_paths?.length ? (
+                    <span className="ml-1.5 px-1.5 py-0.5 rounded bg-red-950 text-red-400 text-xs">{result.attack_paths.length}</span>
+                  ) : null}
                 </button>
               ))}
             </nav>
           </div>
 
-          <div className="flex gap-3">
-            <button
-              onClick={runScan}
-              disabled={scanLoading}
-              className={`px-5 py-2.5 rounded-lg font-medium text-sm flex items-center gap-2 ${
-                scanLoading ? 'bg-slate-700 text-slate-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'
-              }`}
-            >
-              {scanLoading ? (
-                <>
-                  <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  Scanning...
-                </>
-              ) : (
-                <>
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                  </svg>
-                  Run Scan
-                </>
-              )}
+          <div className="flex gap-2">
+            <button onClick={runScan} disabled={scanLoading}
+              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs border transition-all ${scanLoading ? 'border-[#21262d] text-slate-600 cursor-not-allowed' : 'border-blue-800/60 text-blue-400 hover:bg-blue-950/30'}`}>
+              {scanLoading ? <><Spin />Scanning…</> : '⟳ Run Scan'}
             </button>
-            
-            <button
-              onClick={runAnalysis}
-              disabled={loading}
-              className={`px-6 py-2.5 rounded-lg font-medium text-sm flex items-center gap-2 ${
-                loading ? 'bg-slate-700 text-slate-400 cursor-not-allowed' : 'bg-red-600 text-white hover:bg-red-700'
-              }`}
-            >
-              {loading ? (
-                <>
-                  <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  Analyzing...
-                </>
-              ) : 'Run Attack Analysis'}
+            <button onClick={runAnalysis} disabled={loading}
+              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs border transition-all ${loading ? 'border-[#21262d] text-slate-600 cursor-not-allowed' : 'border-red-800/60 text-red-400 hover:bg-red-950/30'}`}>
+              {loading ? <><Spin />Analyzing…</> : '▶ Run Analysis'}
             </button>
           </div>
         </div>
+
+        {(status || loading) && (
+          <div className="border-t border-[#21262d] px-6 py-1.5 flex items-center gap-2 bg-[#0a0f14]">
+            <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shrink-0" />
+            <span className="text-xs font-mono text-slate-400">{status || 'Processing…'}</span>
+          </div>
+        )}
       </header>
 
-      {status && (
-        <div className="bg-slate-800 border-b border-slate-700 px-6 py-2">
-          <div className="max-w-[1600px] mx-auto flex items-center gap-3">
-            <svg className="w-4 h-4 text-red-500 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-            <span className="text-sm text-slate-300">{status}</span>
-          </div>
-        </div>
-      )}
-
-      <main className="max-w-[1600px] mx-auto px-6 py-8">
-        {/* Environment View */}
-        {view === 'env' && (
-          <div className="space-y-6">
-            <div className="grid grid-cols-6 gap-4">
-              <StatCard label="Total Assets" value={stats.totalAssets} />
-              <StatCard label="Misconfigurations" value={stats.totalMisconfigs} />
-              <StatCard label="Critical" value={stats.bySeverity.critical} color="red" />
-              <StatCard label="High" value={stats.bySeverity.high} color="orange" />
-              <StatCard label="Internet-Exposed" value={assets.filter(a => a.internet_facing).length} color="yellow" />
-              <StatCard label="Network Zones" value={new Set(assets.map(a => a.network_zone)).size} color="blue" />
-            </div>
-
-            {/* Zone Distribution - Enterprise View */}
-            <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
-              <div className="text-sm font-semibold text-slate-300 mb-3">Network Zone Distribution (Enterprise)</div>
-              <div className="grid grid-cols-6 gap-2">
-                {/* Perimeter */}
-                <div className="space-y-2">
-                  <div className="text-xs text-red-400 font-medium">Perimeter</div>
-                  {['dmz'].map(zone => {
-                    const zoneAssets = assets.filter(a => a.network_zone === zone)
-                    if (zoneAssets.length === 0) return null
-                    return (
-                      <div key={zone} className="bg-red-900/30 rounded p-2 border border-red-500/30">
-                        <div className="text-xs text-red-300 uppercase">{NETWORK_ZONES[zone]?.name || zone}</div>
-                        <div className="text-lg font-bold">{zoneAssets.length}</div>
-                        <div className="text-xs text-slate-400">{zoneAssets.filter(a => a.internet_facing).length} exposed</div>
-                      </div>
-                    )
-                  })}
-                </div>
-                
-                {/* Production */}
-                <div className="space-y-2">
-                  <div className="text-xs text-orange-400 font-medium">Production</div>
-                  {['prod-web', 'prod-app', 'prod-db'].map(zone => {
-                    const zoneAssets = assets.filter(a => a.network_zone === zone)
-                    if (zoneAssets.length === 0) return null
-                    return (
-                      <div key={zone} className="bg-orange-900/30 rounded p-2 border border-orange-500/30">
-                        <div className="text-xs text-orange-300 uppercase">{NETWORK_ZONES[zone]?.name || zone}</div>
-                        <div className="text-lg font-bold">{zoneAssets.length}</div>
-                        <div className="text-xs text-slate-400">{zoneAssets.filter(a => a.criticality >= 4).length} critical</div>
-                      </div>
-                    )
-                  })}
-                </div>
-                
-                {/* Development */}
-                <div className="space-y-2">
-                  <div className="text-xs text-blue-400 font-medium">Development</div>
-                  {['dev-web', 'dev-app', 'dev-db', 'staging'].map(zone => {
-                    const zoneAssets = assets.filter(a => a.network_zone === zone)
-                    if (zoneAssets.length === 0) return null
-                    return (
-                      <div key={zone} className="bg-blue-900/30 rounded p-2 border border-blue-500/30">
-                        <div className="text-xs text-blue-300 uppercase">{NETWORK_ZONES[zone]?.name || zone}</div>
-                        <div className="text-lg font-bold">{zoneAssets.length}</div>
-                        <div className="text-xs text-slate-400">dev assets</div>
-                      </div>
-                    )
-                  })}
-                </div>
-                
-                {/* Corporate */}
-                <div className="space-y-2">
-                  <div className="text-xs text-green-400 font-medium">Corporate</div>
-                  {['corp', 'corp-wifi'].map(zone => {
-                    const zoneAssets = assets.filter(a => a.network_zone === zone)
-                    if (zoneAssets.length === 0) return null
-                    return (
-                      <div key={zone} className="bg-green-900/30 rounded p-2 border border-green-500/30">
-                        <div className="text-xs text-green-300 uppercase">{NETWORK_ZONES[zone]?.name || zone}</div>
-                        <div className="text-lg font-bold">{zoneAssets.length}</div>
-                        <div className="text-xs text-slate-400">users</div>
-                      </div>
-                    )
-                  })}
-                </div>
-                
-                {/* Restricted */}
-                <div className="space-y-2">
-                  <div className="text-xs text-red-500 font-medium">Restricted</div>
-                  {['restricted', 'pci', 'hipaa'].map(zone => {
-                    const zoneAssets = assets.filter(a => a.network_zone === zone)
-                    if (zoneAssets.length === 0) return null
-                    return (
-                      <div key={zone} className="bg-red-900/50 rounded p-2 border border-red-500/50">
-                        <div className="text-xs text-red-200 uppercase">{NETWORK_ZONES[zone]?.name || zone}</div>
-                        <div className="text-lg font-bold">{zoneAssets.length}</div>
-                        <div className="text-xs text-red-300">high security</div>
-                      </div>
-                    )
-                  })}
-                </div>
-                
-                {/* Cloud & Infra */}
-                <div className="space-y-2">
-                  <div className="text-xs text-cyan-400 font-medium">Cloud & Infra</div>
-                  {['cloud-prod', 'cloud-dev', 'mgmt', 'security', 'dr'].map(zone => {
-                    const zoneAssets = assets.filter(a => a.network_zone === zone)
-                    if (zoneAssets.length === 0) return null
-                    return (
-                      <div key={zone} className="bg-cyan-900/30 rounded p-2 border border-cyan-500/30">
-                        <div className="text-xs text-cyan-300 uppercase">{NETWORK_ZONES[zone]?.name || zone}</div>
-                        <div className="text-lg font-bold">{zoneAssets.length}</div>
-                        <div className="text-xs text-slate-400">infra</div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            </div>
-
-            {/* Business Unit Distribution */}
-            <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
-              <div className="text-sm font-semibold text-slate-300 mb-3">Business Unit Segmentation</div>
-              <div className="grid grid-cols-5 gap-3">
-                {BUSINESS_UNITS.map(bu => {
-                  const buAssets = assets.filter(a => a.business_unit === bu.name)
-                  if (buAssets.length === 0) return null
-                  const criticalCount = buAssets.filter(a => a.criticality >= 4).length
-                  const exposedCount = buAssets.filter(a => a.internet_facing).length
-                  return (
-                    <div key={bu.name} className="bg-slate-700/50 rounded-lg p-3">
-                      <div className="text-sm font-medium text-slate-200">{bu.name}</div>
-                      <div className="text-2xl font-bold">{buAssets.length}</div>
-                      <div className="flex gap-2 mt-1">
-                        <span className="text-xs text-red-400">{criticalCount} critical</span>
-                        <span className="text-xs text-yellow-400">{exposedCount} exposed</span>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-
-            {/* Asset Type Distribution */}
-            <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
-              <div className="text-sm font-semibold text-slate-300 mb-3">Asset Types</div>
-              <div className="grid grid-cols-8 gap-2">
-                {(() => {
-                  const typeCounts: Record<string, number> = {}
-                  assets.forEach(a => { typeCounts[a.type] = (typeCounts[a.type] || 0) + 1 })
-                  return Object.entries(typeCounts)
-                    .sort((a, b) => b[1] - a[1])
-                    .slice(0, 16)
-                    .map(([type, count]) => (
-                      <div key={type} className="bg-slate-700/50 rounded p-2 text-center">
-                        <div className="text-xs text-slate-400 capitalize">{type.replace(/_/g, ' ')}</div>
-                        <div className="text-lg font-bold">{count}</div>
-                      </div>
-                    ))
-                })()}
-              </div>
-            </div>
-
-            {/* Category Stats */}
-            <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
-              <div className="text-sm font-semibold text-slate-300 mb-3">Misconfiguration Categories</div>
-              <div className="grid grid-cols-6 gap-3">
-                {Object.entries(stats.byCat).map(([cat, count]) => (
-                  <div key={cat} className="bg-slate-700/50 rounded-lg p-3 text-center">
-                    <div className="text-xs text-slate-400 capitalize">{cat}</div>
-                    <div className="text-xl font-bold">{count}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Asset Table */}
-            <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-              <div className="p-4 border-b border-slate-700 font-semibold">Enterprise Assets (500 Total)</div>
-              <div className="overflow-x-auto max-h-[500px]">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-700/50 sticky top-0">
-                    <tr>
-                      <th className="text-left p-3 text-slate-400">Asset</th>
-                      <th className="text-left p-3 text-slate-400">Type</th>
-                      <th className="text-left p-3 text-slate-400">Zone</th>
-                      <th className="text-left p-3 text-slate-400">IP</th>
-                      <th className="text-left p-3 text-slate-400">Business Unit</th>
-                      <th className="text-left p-3 text-slate-400">Criticality</th>
-                      <th className="text-left p-3 text-slate-400">Misconfigs</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-700">
-                    {assets.slice(0, 100).map(asset => (
-                      <tr key={asset.id} className="hover:bg-slate-700/30">
-                        <td className="p-3 font-medium">{asset.name}</td>
-                        <td className="p-3 text-slate-400 capitalize">{asset.type.replace(/_/g, ' ')}</td>
-                        <td className="p-3">
-                          <span className={`px-2 py-0.5 rounded text-xs ${
-                            asset.network_zone === 'dmz' ? 'bg-red-900/50 text-red-300' :
-                            asset.network_zone.startsWith('prod') ? 'bg-orange-900/50 text-orange-300' :
-                            asset.network_zone.startsWith('dev') ? 'bg-blue-900/50 text-blue-300' :
-                            asset.network_zone === 'restricted' || asset.network_zone === 'pci' || asset.network_zone === 'hipaa' ? 'bg-red-900/50 text-red-200' :
-                            asset.network_zone.startsWith('cloud') ? 'bg-cyan-900/50 text-cyan-300' :
-                            asset.network_zone === 'corp' || asset.network_zone === 'corp-wifi' ? 'bg-green-900/50 text-green-300' :
-                            'bg-slate-700 text-slate-300'
-                          }`}>{NETWORK_ZONES[asset.network_zone as NetworkZone]?.name || asset.network_zone}</span>
-                        </td>
-                        <td className="p-3 text-slate-400 font-mono text-xs">{asset.ip}</td>
-                        <td className="p-3 text-slate-400 text-xs">{asset.business_unit}</td>
-                        <td className="p-3">
-                          <div className="flex gap-1">
-                            {[1,2,3,4,5].map(i => (
-                              <div key={i} className={`w-2 h-2 rounded-full ${i <= asset.criticality ? 'bg-red-500' : 'bg-slate-600'}`} />
-                            ))}
-                          </div>
-                        </td>
-                        <td className="p-3">
-                          <span className="px-2 py-0.5 bg-orange-900/50 text-orange-300 rounded text-xs">
-                            {asset.misconfigurations.length}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {assets.length > 100 && (
-                <div className="p-2 text-center text-xs text-slate-400 border-t border-slate-700">
-                  Showing 100 of {assets.length} assets
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Scanner View */}
-        {view === 'scan' && (
-          <div className="space-y-6">
-            {/* Scanner Stats */}
-            <div className="grid grid-cols-4 gap-4">
-              <StatCard 
-                label="Scan Status" 
-                value={scanJob?.status || 'idle'} 
-                color={scanJob?.status === 'completed' ? 'green' : scanJob?.status === 'running' ? 'blue' : 'white'} 
-              />
-              <StatCard 
-                label="Progress" 
-                value={scanJob ? `${Math.round(scanJob.progress)}%` : '0%'} 
-                color="blue" 
-              />
-              <StatCard 
-                label="Targets" 
-                value={scanJob?.targetCount || assets.length} 
-              />
-              <StatCard 
-                label="Findings" 
-                value={scanJob?.summary?.totalMisconfigurations || 0} 
-                color="orange" 
-              />
-            </div>
-
-            {/* Scan Progress Bar */}
-            {scanJob && scanJob.status === 'running' && (
-              <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm text-slate-400">Scanning Progress</span>
-                  <span className="text-sm text-blue-400">{Math.round(scanJob.progress)}%</span>
-                </div>
-                <div className="w-full h-3 bg-slate-700 rounded-full overflow-hidden">
-                  <div 
-                    className="h-full bg-gradient-to-r from-blue-600 to-cyan-500 transition-all duration-300"
-                    style={{ width: `${scanJob.progress}%` }}
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Scan Results */}
-            {scanJob?.summary && (
-              <div className="bg-slate-800 rounded-xl p-6 border border-slate-700">
-                <h3 className="text-lg font-semibold mb-4">Scan Summary</h3>
-                <div className="grid grid-cols-5 gap-4">
-                  <div className="text-center">
-                    <div className="text-3xl font-bold text-red-400">{scanJob.summary.criticalCount}</div>
-                    <div className="text-xs text-slate-400">Critical</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-3xl font-bold text-orange-400">{scanJob.summary.highCount}</div>
-                    <div className="text-xs text-slate-400">High</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-3xl font-bold text-yellow-400">{scanJob.summary.mediumCount}</div>
-                    <div className="text-xs text-slate-400">Medium</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-3xl font-bold text-slate-400">{scanJob.summary.lowCount}</div>
-                    <div className="text-xs text-slate-400">Low</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="text-3xl font-bold text-green-400">{scanJob.summary.successCount}</div>
-                    <div className="text-xs text-slate-400">Scanned</div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Optimization Features */}
-            <div className="bg-gradient-to-br from-slate-800 to-slate-800/50 rounded-xl p-6 border border-slate-700">
-              <h3 className="text-lg font-semibold mb-4">Scanner Optimizations Active</h3>
-              <div className="grid grid-cols-3 gap-4">
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 bg-blue-900/50 rounded-lg flex items-center justify-center">
-                    <svg className="w-4 h-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <div className="font-medium text-sm">Batched Commands</div>
-                    <div className="text-xs text-slate-400">20+ commands in 1 SSH call</div>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 bg-green-900/50 rounded-lg flex items-center justify-center">
-                    <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
-                    </svg>
-                  </div>
-                  <div>
-                    <div className="font-medium text-sm">Connection Pooling</div>
-                    <div className="text-xs text-slate-400">SSH ControlMaster reuse</div>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 bg-purple-900/50 rounded-lg flex items-center justify-center">
-                    <svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <div className="font-medium text-sm">Host Discovery</div>
-                    <div className="text-xs text-slate-400">Skip dead hosts (100ms vs 30s)</div>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 bg-yellow-900/50 rounded-lg flex items-center justify-center">
-                    <svg className="w-4 h-4 text-yellow-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <div className="font-medium text-sm">Result Caching</div>
-                    <div className="text-xs text-slate-400">Skip unchanged hosts</div>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 bg-red-900/50 rounded-lg flex items-center justify-center">
-                    <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-                    </svg>
-                  </div>
-                  <div>
-                    <div className="font-medium text-sm">Adaptive Rate Limit</div>
-                    <div className="text-xs text-slate-400">AIMD algorithm</div>
-                  </div>
-                </div>
-                <div className="flex items-start gap-3">
-                  <div className="w-8 h-8 bg-cyan-900/50 rounded-lg flex items-center justify-center">
-                    <svg className="w-4 h-4 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
-                    </svg>
-                  </div>
-                  <div>
-                    <div className="font-medium text-sm">Priority Queue</div>
-                    <div className="text-xs text-slate-400">Business impact scoring</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Analysis View */}
-        {view === 'analysis' && (
-          <div className="space-y-6">
-            {!result ? (
-              <div className="text-center py-20">
-                <div className="w-20 h-20 bg-slate-800 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <svg className="w-10 h-10 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                  </svg>
-                </div>
-                <h3 className="text-xl font-semibold mb-2">Ready for Hybrid Analysis</h3>
-                <p className="text-slate-400 mb-6">Scalable algorithm: Graph + Batch LLM</p>
-              </div>
-            ) : (
-              <>
-                {/* Graph Stats */}
-                <div className="grid grid-cols-5 gap-4">
-                  <StatCard label="Nodes" value={result.graph_stats.total_nodes} color="blue" />
-                  <StatCard label="Edges" value={result.graph_stats.total_edges} color="purple" />
-                  <StatCard label="Branching" value={result.graph_stats.avg_branching_factor} color="green" />
-                  <StatCard label="Entry Points" value={result.entry_points.length} color="red" />
-                  <StatCard label="Attack Paths" value={result.attack_paths.length} color="orange" />
-                </div>
-
-                {/* Edge Stats - Hybrid */}
-                <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
-                  <div className="text-sm text-slate-400 mb-2">Hybrid Edge Creation</div>
-                  <div className="flex items-center gap-6">
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
-                      <span className="text-sm text-blue-400">Pattern: {result.edge_stats.pattern_edges}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 bg-purple-500 rounded-full"></div>
-                      <span className="text-sm text-purple-400">LLM: {result.edge_stats.llm_edges}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 bg-green-500 rounded-full"></div>
-                      <span className="text-sm text-green-400">Total: {result.edge_stats.total_edges}</span>
-                    </div>
-                  </div>
-                  <div className="text-xs text-slate-500 mt-2">
-                    Pattern edges: instant • LLM edges: batch evaluated for non-obvious attack paths
-                  </div>
-                </div>
-
-                {/* Timing */}
-                <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
-                  <div className="text-sm text-slate-400 mb-2">Performance (Total: {result.timing.total}ms)</div>
-                  <div className="flex gap-4 text-xs">
-                    <span className="text-blue-400">Nodes: {result.timing.nodes}ms</span>
-                    <span className="text-purple-400">Edges: {result.timing.edges}ms</span>
-                    <span className="text-green-400">PageRank: {result.timing.pagerank}ms</span>
-                    <span className="text-yellow-400">Paths: {result.timing.paths}ms</span>
-                    <span className="text-red-400">LLM Validation: {result.timing.validation}ms</span>
-                    <span className="text-orange-400">Entry Analysis: {result.timing.entry_analysis}ms</span>
-                  </div>
-                </div>
-
-                {/* Entry Points */}
-                <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-                  <div className="p-4 border-b border-slate-700 font-semibold">Entry Points (LLM Ranked)</div>
-                  <div className="divide-y divide-slate-700">
-                    {result.entry_points.slice(0, 6).map((entry, i) => (
-                      <div key={i} className="p-4">
-                        <div className="flex items-start gap-3">
-                          <div className="w-7 h-7 bg-red-900/50 rounded-full flex items-center justify-center text-red-400 text-sm font-bold">
-                            {i + 1}
-                          </div>
-                          <div className="flex-1">
-                            <div className="font-medium">{entry.asset_name}</div>
-                            <div className="text-sm text-orange-400">{entry.misconfig_title}</div>
-                            <div className="text-sm text-slate-400 mt-1">{entry.reasoning}</div>
-                            <div className="text-sm text-red-300">Value: {entry.attacker_value}</div>
-                          </div>
-                          <div className="text-xs text-slate-400">PR: {entry.pagerank_score.toFixed(4)}</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Critical Assets */}
-                <div className="bg-slate-800 rounded-xl border border-slate-700 p-4">
-                  <div className="font-semibold mb-3">Critical Assets</div>
-                  <div className="grid grid-cols-3 gap-3">
-                    {result.critical_assets.map((a, i) => (
-                      <div key={i} className="bg-slate-700/50 rounded-lg p-3">
-                        <div className="font-medium text-sm">{a.asset_name}</div>
-                        <div className="text-xs text-slate-400">{a.reason}</div>
-                        <div className="text-xs text-purple-400">{a.paths_to_it} paths</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Insights */}
-                <div className="bg-gradient-to-br from-red-900/30 to-orange-900/30 rounded-xl p-5 border border-red-800/50">
-                  <div className="font-semibold mb-3">Key Insights</div>
-                  <ul className="space-y-1">
-                    {result.key_insights.map((insight, i) => (
-                      <li key={i} className="flex items-start gap-2 text-sm">
-                        <span className="text-red-400">•</span>
-                        <span className="text-slate-300">{insight}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* Paths View */}
-        {view === 'paths' && (
-          <div className="space-y-6">
-            {!result?.attack_paths?.length ? (
-              <div className="text-center py-20 text-slate-400">Run analysis to discover paths</div>
-            ) : (
-              <>
-                {/* Unique Paths Summary */}
-                <div className="bg-gradient-to-r from-green-900/30 to-blue-900/30 rounded-xl p-4 border border-green-800/50">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <svg className="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                      </svg>
-                      <span className="font-medium text-green-300">Unique Attack Paths Discovered</span>
-                    </div>
-                    <div className="flex items-center gap-4 text-sm">
-                      <span className="text-slate-300">
-                        {result.attack_paths.length} paths • 
-                        Each uses <span className="text-green-400 font-medium">distinct assets</span>
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-6">
-                  {/* Path List */}
-                  <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-                    <div className="p-4 border-b border-slate-700 font-semibold">
-                      Unique Paths ({result.attack_paths.length})
-                    </div>
-                    <div className="divide-y divide-slate-700 max-h-[600px] overflow-y-auto">
-                      {result.attack_paths.map((path, i) => {
-                        // Get unique assets for this path
-                        const uniqueAssets = [...new Set(path.nodes.map(n => n.asset_id))]
-                        const vulnCategories = [...new Set(path.nodes.map(n => n.misconfig_category))]
-                        
-                        return (
-                          <button
-                            key={path.path_id}
-                            onClick={() => setSelectedPath(i)}
-                            className={`w-full p-4 text-left hover:bg-slate-700/30 transition-colors ${
-                              selectedPath === i ? 'bg-red-900/20 border-l-2 border-red-500' : ''
-                            }`}
-                          >
-                            <div className="flex items-center justify-between mb-1">
-                              <span className="font-medium">{path.path_id}</span>
-                              <span className={`text-xs px-2 py-0.5 rounded ${
-                                path.final_risk_score > 0.5 ? 'bg-red-900/50 text-red-300' : 'bg-yellow-900/50 text-yellow-300'
-                              }`}>
-                                {Math.round(path.final_risk_score * 100)}% risk
-                              </span>
-                            </div>
-                            <div className="text-xs text-slate-400 mb-1">
-                              {uniqueAssets.length} unique assets • {path.nodes.length} steps
-                            </div>
-                            <div className="flex flex-wrap gap-1 mb-1">
-                              {vulnCategories.map((cat, ci) => (
-                                <span key={ci} className={`text-xs px-1.5 py-0.5 rounded ${
-                                  cat === 'authentication' ? 'bg-red-900/40 text-red-300' :
-                                  cat === 'authorization' ? 'bg-purple-900/40 text-purple-300' :
-                                  cat === 'network' ? 'bg-blue-900/40 text-blue-300' :
-                                  cat === 'service' ? 'bg-orange-900/40 text-orange-300' :
-                                  'bg-slate-700 text-slate-300'
-                                }`}>
-                                  {cat}
-                                </span>
-                              ))}
-                            </div>
-                            <div className="flex gap-2 text-xs">
-                              <span className="text-blue-400">P:{Math.round(path.path_probability * 100)}%</span>
-                              <span className="text-green-400">R:{Math.round(path.realism_score * 100)}%</span>
-                            </div>
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
-
-                {/* Path Detail */}
-                <div className="col-span-2">
-                  {selectedPath !== null && result.attack_paths[selectedPath] ? (
-                    <div className="bg-slate-800 rounded-xl border border-slate-700">
-                      <div className="p-5 border-b border-slate-700">
-                        <div className="flex items-center justify-between">
-                          <h3 className="text-lg font-semibold">{result.attack_paths[selectedPath].path_id}</h3>
-                          <div className="flex gap-3 text-xs">
-                            <span className="text-blue-400">Prob: {Math.round(result.attack_paths[selectedPath].path_probability * 100)}%</span>
-                            <span className="text-green-400">Realism: {Math.round(result.attack_paths[selectedPath].realism_score * 100)}%</span>
-                            <span className="text-orange-400">Impact: {Math.round(result.attack_paths[selectedPath].impact_score * 100)}%</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Score Bar */}
-                      <div className="p-4 border-b border-slate-700 bg-slate-700/30">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm">Final Risk Score</span>
-                          <div className="flex items-center gap-3">
-                            <div className="w-48 h-3 bg-slate-700 rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-gradient-to-r from-green-500 via-yellow-500 to-red-500"
-                                style={{ width: `${result.attack_paths[selectedPath].final_risk_score * 100}%` }}
-                              />
-                            </div>
-                            <span className="text-lg font-bold text-red-400">
-                              {Math.round(result.attack_paths[selectedPath].final_risk_score * 100)}%
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Steps */}
-                      <div className="p-5 border-b border-slate-700">
-                        <div className="flex items-center justify-between mb-4">
-                          <h4 className="font-medium">Attack Chain</h4>
-                          <div className="flex items-center gap-2 text-xs">
-                            <span className="text-green-400">
-                              {[...new Set(result.attack_paths[selectedPath].nodes.map(n => n.asset_id))].length} unique assets
-                            </span>
-                          </div>
-                        </div>
-                        <div className="space-y-3">
-                          {result.attack_paths[selectedPath].nodes.map((node, i) => {
-                            const edge = result.attack_paths[selectedPath].edges[i]
-                            const categoryColor = 
-                              node.misconfig_category === 'authentication' ? 'bg-red-900/40 text-red-300 border-red-700' :
-                              node.misconfig_category === 'authorization' ? 'bg-purple-900/40 text-purple-300 border-purple-700' :
-                              node.misconfig_category === 'network' ? 'bg-blue-900/40 text-blue-300 border-blue-700' :
-                              node.misconfig_category === 'service' ? 'bg-orange-900/40 text-orange-300 border-orange-700' :
-                              'bg-slate-700 text-slate-300 border-slate-600'
-                            
-                            return (
-                              <div key={i} className="flex gap-4">
-                                <div className="flex flex-col items-center">
-                                  <div className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold ${
-                                    i === 0 ? 'bg-red-600' : i === result.attack_paths[selectedPath].nodes.length - 1 ? 'bg-purple-600' : 'bg-orange-600'
-                                  }`}>{i + 1}</div>
-                                  {i < result.attack_paths[selectedPath].nodes.length - 1 && (
-                                    <div className="w-0.5 h-full bg-slate-600 my-2" />
-                                  )}
-                                </div>
-                                <div className="flex-1 pb-3">
-                                  <div className="flex items-center gap-2 mb-1">
-                                    <span className="font-medium">{node.asset_name}</span>
-                                    <span className="text-xs px-1.5 py-0.5 bg-slate-700 rounded uppercase">{node.asset_zone}</span>
-                                    <span className="text-xs px-1.5 py-0.5 bg-slate-600 rounded capitalize">{node.asset_type.replace(/_/g, ' ')}</span>
-                                  </div>
-                                  <div className="flex items-center gap-2 mb-1">
-                                    <span className="text-sm text-orange-400">{node.misconfig_title}</span>
-                                    <span className={`text-xs px-1.5 py-0.5 rounded border ${categoryColor}`}>
-                                      {node.misconfig_category}
-                                    </span>
-                                  </div>
-                                  {edge && (
-                                    <div className="mt-1 text-xs bg-slate-700/50 p-2 rounded">
-                                      <div className="flex items-center gap-2">
-                                        <span className="text-slate-400">→ {Math.round(edge.probability * 100)}% via {edge.technique}</span>
-                                        <span className={`px-1.5 py-0.5 rounded text-xs ${
-                                          edge.edge_type === 'llm' 
-                                            ? 'bg-purple-900/50 text-purple-300' 
-                                            : 'bg-blue-900/50 text-blue-300'
-                                        }`}>
-                                          {edge.edge_type === 'llm' ? 'LLM' : 'Pattern'}
-                                        </span>
-                                      </div>
-                                      {edge.reasoning && (
-                                        <div className="text-slate-500 mt-1">{edge.reasoning}</div>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      </div>
-
-                      {/* Narrative */}
-                      <div className="p-5 border-b border-slate-700">
-                        <h4 className="font-medium mb-2">LLM Narrative</h4>
-                        <p className="text-sm text-slate-300">{result.attack_paths[selectedPath].narrative}</p>
-                      </div>
-
-                      {/* Impact */}
-                      <div className="p-5">
-                        <div className="grid grid-cols-2 gap-4">
-                          <div>
-                            <span className="text-sm text-slate-400">Business Impact:</span>
-                            <p className="text-sm text-red-300 mt-1">{result.attack_paths[selectedPath].business_impact}</p>
-                          </div>
-                          <div>
-                            <span className="text-sm text-slate-400">Kill Chain:</span>
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {result.attack_paths[selectedPath].kill_chain.map((phase, i) => (
-                                <span key={i} className="text-xs px-2 py-0.5 bg-slate-700 rounded">{phase}</span>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="bg-slate-800 rounded-xl border border-slate-700 p-12 text-center text-slate-400">
-                      Select a path
-                    </div>
-                  )}
-                </div>
-              </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* Algorithm View */}
-        {view === 'algo' && (
-          <div className="space-y-6">
-            <div className="bg-slate-800 rounded-xl border border-slate-700 p-6">
-              <h3 className="text-xl font-bold mb-6">Scalable Hybrid Algorithm</h3>
-
-              <div className="space-y-4">
-                <div className="border-l-4 border-blue-500 pl-4">
-                  <h4 className="font-semibold text-blue-400">Phase 1: Build Nodes (O(n))</h4>
-                  <p className="text-sm text-slate-400">Create node per (asset, misconfiguration) pair</p>
-                </div>
-
-                <div className="border-l-4 border-purple-500 pl-4">
-                  <h4 className="font-semibold text-purple-400">Phase 2: Edge Evaluation (O(n²) but fast)</h4>
-                  <p className="text-sm text-slate-400">Use attack pattern templates + zone reachability. No per-edge LLM calls!</p>
-                  <div className="mt-2 bg-slate-700/50 p-2 rounded text-xs">
-                    Predefined patterns encode attacker knowledge: network_exposure → authentication → authorization
-                  </div>
-                </div>
-
-                <div className="border-l-4 border-green-500 pl-4">
-                  <h4 className="font-semibold text-green-400">Phase 3: PageRank (O(iterations × E))</h4>
-                  <p className="text-sm text-slate-400">Calculate node importance with probability-weighted edges</p>
-                </div>
-
-                <div className="border-l-4 border-yellow-500 pl-4">
-                  <h4 className="font-semibold text-yellow-400">Phase 4: Dijkstra Path Finding (O(E log V))</h4>
-                  <p className="text-sm text-slate-400">Find highest probability paths using -log(probability) as edge weight</p>
-                </div>
-
-                <div className="border-l-4 border-red-500 pl-4">
-                  <h4 className="font-semibold text-red-400">Phase 5: Batch LLM Validation (scales linearly)</h4>
-                  <p className="text-sm text-slate-400">Validate 5 paths per LLM call instead of 1 call per edge</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Performance Comparison */}
-            <div className="bg-gradient-to-r from-green-900/30 to-blue-900/30 rounded-xl p-6 border border-green-800/50">
-              <h3 className="font-semibold mb-3 text-green-400">Performance Comparison</h3>
-              <div className="grid grid-cols-2 gap-6 text-sm">
-                <div>
-                  <h4 className="text-slate-300 mb-2">Before (Per-Edge LLM)</h4>
-                  <ul className="space-y-1 text-slate-400">
-                    <li>❌ 150 nodes = ~22,500 edge evaluations</li>
-                    <li>❌ 22,500 LLM calls</li>
-                    <li>❌ ~30+ minutes</li>
-                  </ul>
-                </div>
-                <div>
-                  <h4 className="text-slate-300 mb-2">After (Pattern + Batch)</h4>
-                  <ul className="space-y-1 text-green-400">
-                    <li>✓ Pattern-based edge creation (instant)</li>
-                    <li>✓ ~2-4 LLM calls total (batched)</li>
-                    <li>✓ ~5-15 seconds</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-
-            {/* False Positive Reduction */}
-            <div className="bg-gradient-to-r from-purple-900/30 to-pink-900/30 rounded-xl p-6 border border-purple-800/50">
-              <h3 className="font-semibold mb-3 text-purple-400">False Positive Reduction</h3>
-              <div className="grid grid-cols-2 gap-6 text-sm">
-                <div>
-                  <h4 className="text-slate-300 mb-2">Before</h4>
-                  <ul className="space-y-1 text-slate-400">
-                    <li>❌ 15-30% false positive rate</li>
-                    <li>❌ Static detection rules</li>
-                    <li>❌ No context awareness</li>
-                  </ul>
-                </div>
-                <div>
-                  <h4 className="text-slate-300 mb-2">After</h4>
-                  <ul className="space-y-1 text-purple-400">
-                    <li>✓ 5-10% false positive rate</li>
-                    <li>✓ Context-aware validation</li>
-                    <li>✓ Confidence scoring</li>
-                    <li>✓ Known FP patterns database</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-
-            {/* Scanner Architecture */}
-            <div className="bg-gradient-to-r from-cyan-900/30 to-teal-900/30 rounded-xl p-6 border border-cyan-800/50">
-              <h3 className="font-semibold mb-4 text-cyan-400">Scanner Architecture Files</h3>
-              <div className="grid grid-cols-2 gap-4 text-xs font-mono">
-                <div className="space-y-1">
-                  <div className="text-slate-300">Core Scanners:</div>
-                  <div className="text-cyan-300">optimized-scanner.ts</div>
-                  <div className="text-cyan-300">high-perf-scanner.ts</div>
-                  <div className="text-slate-300 mt-2">Scalable Components:</div>
-                  <div className="text-cyan-300">scalable/scanner-orchestrator.ts</div>
-                  <div className="text-cyan-300">scalable/result-streamer.ts</div>
-                  <div className="text-cyan-300">scalable/distributed-coordinator.ts</div>
-                </div>
-                <div className="space-y-1">
-                  <div className="text-slate-300">Infrastructure:</div>
-                  <div className="text-cyan-300">scalable/job-state-manager.ts</div>
-                  <div className="text-cyan-300">scalable/priority-queue.ts</div>
-                  <div className="text-cyan-300">scalable/adaptive-rate-limiter.ts</div>
-                  <div className="text-cyan-300">scalable/scan-scheduler.ts</div>
-                  <div className="text-slate-300 mt-2">Analysis:</div>
-                  <div className="text-cyan-300">zone-detection.ts</div>
-                  <div className="text-cyan-300">network-topology-collector.ts</div>
-                  <div className="text-cyan-300">fp-reduction.ts</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+      {/* ── Main ── */}
+      <main className="max-w-[1600px] mx-auto px-6 py-6">
+        {view === 'env'      && <EnvView assets={assets} />}
+        {view === 'scan'     && <ScanView scanJob={scanJob} scanLoading={scanLoading} onScan={runScan} />}
+        {view === 'analysis' && <AnalysisView result={result} loading={loading} status={status} onAnalyze={runAnalysis} />}
+        {view === 'paths'    && <PathsView result={result} />}
+        {view === 'algo'     && <AlgoView />}
       </main>
-    </div>
-  )
-}
-
-function StatCard({ label, value, color = 'white' }: { label: string; value: string | number; color?: string }) {
-  const colors: Record<string, string> = {
-    white: 'text-white',
-    red: 'text-red-400',
-    yellow: 'text-yellow-400',
-    blue: 'text-blue-400',
-    purple: 'text-purple-400',
-    green: 'text-green-400',
-    orange: 'text-orange-400'
-  }
-  return (
-    <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
-      <div className="text-sm text-slate-400 mb-1">{label}</div>
-      <div className={`text-2xl font-bold ${colors[color]}`}>{value}</div>
     </div>
   )
 }
