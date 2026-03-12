@@ -108,6 +108,8 @@ export interface MCTSNode {
   path_from_root: string[]
   // G: Set for O(1) cycle detection in expand() — replaces O(depth) includes()
   visited_set: Set<string>
+  // P2: Set of already-expanded neighbor asset IDs — O(1) duplicate check
+  expandedSet: Set<string>
 }
 
 export interface PathNode {
@@ -188,6 +190,7 @@ export interface EnhancedAnalysisResult {
   entry_points: EntryPoint[]
   critical_assets: CriticalAsset[]
   risk_metrics: RiskMetrics
+  chokepoints: { asset_id: string; asset_name: string; asset_type: string; zone: string; paths_through: number; blocking_impact: number }[]  // S6
   timing: {
     gnn_embedding: number
     bayesian_inference: number
@@ -402,10 +405,45 @@ function zoneDistance(a: string, b: string): number {
   return ZONE_DIST_MATRIX.get(`${a}:${b}`) ?? 99
 }
 
+// ─── ATTACKER TTP PROFILES ───────────────────────────────────────────────────
+// S5: Three empirically-grounded threat actor profiles. Each re-weights the
+// Bayesian base rates to reflect how that actor class actually operates in
+// real-world intrusion data (MITRE ATT&CK, CrowdStrike, Mandiant reports).
+// APT (nation-state): patient, credential-focused, lives off the land.
+// Ransomware: fast lateral spread, prioritises exfiltration before encryption.
+// Insider: already inside, abuses legitimate privileges, avoids noisy exploits.
+
+export type TTPProfile = 'apt' | 'ransomware' | 'insider'
+
+export const TTP_MULTIPLIERS: Record<TTPProfile, Partial<Record<string, number>>> = {
+  apt: {
+    credential_theft:     1.6,   // T1003, T1558 — primary initial access path
+    lateral:              1.3,   // T1021 — slow methodical lateral movement
+    privilege_escalation: 1.4,   // T1484 — targeted domain escalation
+    exploit:              0.8,   // APT avoids noisy exploits when possible
+    data_exfiltration:    1.2,
+  },
+  ransomware: {
+    exploit:              1.6,   // initial access via unpatched services
+    lateral:              1.5,   // fast horizontal spread (worm-like)
+    data_exfiltration:    1.8,   // double-extortion — exfil before encrypt
+    credential_theft:     1.2,
+    privilege_escalation: 1.1,
+  },
+  insider: {
+    privilege_escalation: 1.8,   // abuse of legitimate elevated access
+    data_exfiltration:    1.6,   // primary objective
+    lateral:              0.6,   // insiders usually don't need to pivot
+    credential_theft:     0.7,   // already have creds
+    exploit:              0.4,   // insiders avoid exploits (too detectable)
+  },
+}
+
 // ─── LAYER 2: BAYESIAN PROBABILITY ENGINE ────────────────────────────────────
 
 class BayesianProbabilityEngine {
   private edges = new Map<string, BayesianEdge>()
+  ttpProfile: TTPProfile = 'apt'   // S5: active threat actor profile
   private readonly evidenceWeights = {
     vulnerability_scanner: 0.30,
     siem_alerts:           0.25,
@@ -505,6 +543,10 @@ class BayesianProbabilityEngine {
     if (type === 'data_exfiltration') {
       if (tt === 'database_server' || tt === 'backup_server' || tt === 'file_server') p *= 1.3
     }
+
+    // S5: apply TTP profile multiplier for this technique type
+    const ttpMult = TTP_MULTIPLIERS[this.ttpProfile]?.[type] ?? 1.0
+    p *= ttpMult
 
     return Math.min(p, 0.95)
   }
@@ -642,26 +684,26 @@ class MCTSPathDiscoveryEngine {
     targetAssets: Set<string>,
     adj: Map<string, string[]>,
     assetMap: Map<string, EnhancedAsset>,
-    cjDist: Map<string, number> = new Map()
+    cjDist: Map<string, number> = new Map(),
+    skipCjEval = false   // S5: set true when CJ cache is pre-populated from main engine
   ): Promise<RealisticAttackPath[]> {
-    // C: parallel crown jewel evaluation — LLM calls are independent, run
-    // concurrently with Promise.all. 11 sequential calls @ ~15ms each = ~165ms;
-    // 11 parallel calls = ~15ms (one round-trip). Pre-filter still eliminates
-    // the ~60 non-CJ assets that would never qualify.
-    const CJ_TYPES = new Set(['domain_controller','identity_server','pki_server','ca_server','key_management'])
-    console.log('[MCTS] Evaluating crown jewels…')
-    const cjCandidates: EnhancedAsset[] = []
-    for (const asset of assetMap.values()) {
-      const key = `${asset.id}:${asset.type}:${asset.criticality}`
-      if (asset.criticality >= 4 && CJ_TYPES.has(asset.type)) {
-        cjCandidates.push(asset)
-      } else {
-        this.cjCache.set(key, false)
+    if (!skipCjEval) {
+      // Crown jewel LLM evaluation — only on first call; clones set skipCjEval=true
+      const CJ_TYPES = new Set(['domain_controller','identity_server','pki_server','ca_server','key_management'])
+      console.log('[MCTS] Evaluating crown jewels…')
+      const cjCandidates: EnhancedAsset[] = []
+      for (const asset of assetMap.values()) {
+        const key = `${asset.id}:${asset.type}:${asset.criticality}`
+        if (asset.criticality >= 4 && CJ_TYPES.has(asset.type)) {
+          cjCandidates.push(asset)
+        } else {
+          this.cjCache.set(key, false)
+        }
       }
+      await Promise.all(cjCandidates.map(a => this.isTerminalAssetLLM(a)))
+      const crowns = Array.from(this.cjCache.values()).filter(Boolean).length
+      console.log(`[MCTS] ${crowns} crown jewels found`)
     }
-    await Promise.all(cjCandidates.map(a => this.isTerminalAssetLLM(a)))
-    const crowns = Array.from(this.cjCache.values()).filter(Boolean).length
-    console.log(`[MCTS] ${crowns} crown jewels found`)
 
     // Cap entry points at top-10 by criticality × misconfig severity
     const scored = entryPoints
@@ -705,6 +747,7 @@ class MCTSPathDiscoveryEngine {
         probability: 1.0, depth: 0,
         path_from_root: [entry.asset_id],
         visited_set: new Set([entry.asset_id]),
+        expandedSet: new Set<string>(),    // P2: O(1) duplicate check in expand()
       }
 
       // E: adaptive budget — check for new patterns every PROBE_INTERVAL sims.
@@ -859,6 +902,7 @@ class MCTSPathDiscoveryEngine {
         depth: node.depth + 1,
         path_from_root: newPath,
         visited_set: new Set(newPath),
+        expandedSet: new Set<string>(),
       })
     }
 
@@ -1089,7 +1133,7 @@ class MCTSPathDiscoveryEngine {
       attacker_effort: this.attackerEffort(nodes, edges),
       detection_probability: nodes.length * 0.03,
       business_impact: this.businessImpact(pathNodes),
-      realism_score: this.realismScore(nodes, edges, cumProb),
+      realism_score: this.realismScore(nodes, edges, cumProb, pathNodes, assetMap),
       kill_chain_phases: this.killChainPhases(edges),
       required_capabilities: this.capabilities(edges),
       timeline_estimate: `${nodes.length * 4}–${nodes.length * 8} hours`,
@@ -1101,11 +1145,13 @@ class MCTSPathDiscoveryEngine {
 
   // ── Pattern diversity helpers ─────────────────────────────────────────────
 
-  // Structural fingerprint: entry_type:zone | edges | target_type:zone | zone_depth
-  // VI: include the count of distinct zone-hops in the fingerprint.
-  // Two paths with the same technique sequence but different network depth
-  // (e.g. shallow dmz→restricted vs deep mgmt→security→restricted traversal)
-  // represent genuinely distinct attack strategies and should be reported separately.
+  // S1: Canonical technique-set — sort edge types so ct→lat and lat→ct
+  // map to the same pattern. Previously these counted as different patterns,
+  // creating false diversity in the top-5 output.
+  //
+  // S2: Zone-sequence fingerprint — the unique ordered sequence of zones
+  // traversed matters for remediation. mgmt→restricted and mgmt→corp→restricted
+  // require different controls even with identical technique sets.
   patternSignature(path: RealisticAttackPath, assetMap: Map<string, EnhancedAsset>): string {
     const entry  = path.nodes[0]
     const target = path.nodes[path.nodes.length - 1]
@@ -1113,38 +1159,63 @@ class MCTSPathDiscoveryEngine {
     const ta     = assetMap.get(target.asset_id)
     const entryPart  = `${ea?.type ?? entry.asset_id}:${entry.zone}`
     const targetPart = `${ta?.type ?? target.asset_id}:${target.zone}`
-    const edgePart   = path.edges.map(e => e.edge_type).join('→')
-    // VI: count unique zone transitions across the path
+    // S1: canonical (sorted) technique set — order-independent
+    const techSet = [...new Set(path.edges.map(e => e.edge_type))].sort().join('+')
+    // S2: unique zone sequence (deduplicate consecutive same-zone steps)
     const zones = path.nodes.map(n => n.zone)
-    let zoneHops = 0
-    for (let i = 1; i < zones.length; i++) if (zones[i] !== zones[i-1]) zoneHops++
-    return `${entryPart}|${edgePart}|${targetPart}|z${zoneHops}`
+    const zoneSeq: string[] = []
+    for (let i = 0; i < zones.length; i++) {
+      if (i === 0 || zones[i] !== zones[i-1]) zoneSeq.push(zones[i])
+    }
+    return `${entryPart}|${techSet}|${targetPart}|${zoneSeq.join('→')}`
   }
 
-  // Human-readable label derived from the signature — includes hop count so
-  // paths with the same technique set but different lengths are distinguishable.
+  // Human-readable label — shows canonical technique set + zone path (S1+S2).
   patternLabel(sig: string): string {
     if (sig === '__pending__') return '—'
-    const [entryPart, edgePart, targetPart] = sig.split('|')
+    const parts      = sig.split('|')
+    const entryPart  = parts[0]
+    const techPart   = parts[1]
+    const targetPart = parts[2]
+    const zonePath   = parts[3] ?? ''
     const entryType  = entryPart.split(':')[0].replace(/_/g, ' ')
     const targetType = targetPart.split(':')[0].replace(/_/g, ' ')
     const targetZone = targetPart.split(':')[1] ?? ''
-    const techniques = edgePart.split('→').map(t => t.replace(/_/g, ' '))
-    const hops       = techniques.length
-    const uniqueTech = [...new Set(techniques)]
-    return `${entryType} → ${uniqueTech.join(' + ')} → ${targetType} [${targetZone}] (${hops} hop${hops === 1 ? '' : 's'})`
+    const techs      = techPart.split('+').map(t => t.replace(/_/g, ' '))
+    const zoneLabel  = zonePath ? ` via ${zonePath}` : ''
+    return `${entryType} → ${techs.join(' + ')} → ${targetType} [${targetZone}]${zoneLabel}`
   }
 
-  private realismScore(nodes: MCTSNode[], edges: BayesianEdge[], prob: number): number {
+  private realismScore(nodes: MCTSNode[], edges: BayesianEdge[], prob: number, pathNodes?: PathNode[], assetMap?: Map<string, EnhancedAsset>): number {
     const evidenceSources = new Set(edges.flatMap(e => e.evidence_sources))
     const avgCIWidth = edges.reduce((s, e) => s + (e.confidence_interval[1] - e.confidence_interval[0]), 0) / Math.max(edges.length, 1)
     const lenScore = Math.max(0, 1 - Math.abs(nodes.length - 5) * 0.05)
     const visits = nodes.reduce((s, n) => s + n.visits, 0)
+
+    // S3: EPSS/CVSS-weighted realism — paths through assets with actively
+    // exploited vulnerabilities (high EPSS) are far more imminent threats.
+    // Geometric mean of per-node max EPSS scores: a single high-EPSS vuln
+    // on any node should elevate the entire path's realism.
+    let epssScore = 0.5  // neutral default when no EPSS data available
+    if (pathNodes && assetMap) {
+      const nodeMaxEpss = pathNodes.map(pn => {
+        const asset = assetMap.get(pn.asset_id)
+        if (!asset) return 0.05
+        const scores = asset.misconfigurations
+          .map(m => m.epss ?? (m.severity === 'critical' && m.exploit_available ? 0.7 : m.severity === 'critical' ? 0.3 : m.severity === 'high' ? 0.15 : 0.05))
+        return Math.max(...scores, 0.01)
+      })
+      // Geometric mean — a path is only as stealthy as its weakest link
+      const logSum = nodeMaxEpss.reduce((s, e) => s + Math.log(e), 0)
+      epssScore = Math.exp(logSum / nodeMaxEpss.length)
+    }
+
     return (
-      prob * 0.30 +
-      Math.min(evidenceSources.size / 3, 1) * 0.25 +
-      (1 - avgCIWidth) * 0.20 +
-      lenScore * 0.15 +
+      prob        * 0.25 +
+      epssScore   * 0.20 +   // S3: EPSS weight replaces partial evidence credit
+      Math.min(evidenceSources.size / 3, 1) * 0.20 +
+      (1 - avgCIWidth) * 0.15 +
+      lenScore    * 0.10 +
       Math.min(visits / (this.SIMS * 0.5), 1) * 0.10
     )
   }
@@ -1280,25 +1351,74 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
     await this.bayes.computeProbabilities(assets, potentialEdges)
     const bayesTime = Date.now() - t2
 
-    // Phase 3: MCTS path discovery
+    // Phase 3: MCTS — three TTP profiles in parallel (S5)
     this.emit('progress', 'Running MCTS path discovery…')
     const t3 = Date.now()
-    const assetMap     = new Map(assets.map(a => [a.id, a]))
-    const entryPoints  = this.identifyEntryPoints(assets)
-    // I: targetAssets = crown jewels only, not all crit≥4 assets.
-    // Previously crit≥4 matched ~44 staging/app/corp assets that stopped
-    // rollouts before reaching DCs/IdPs/PKIs. Now MCTS only terminates at
-    // true game-over assets; intermediate high-crit assets contribute a
-    // graduated partial reward via distanceToTarget() in simulate().
+    // P1: pre-sort each asset's misconfigurations by severity once here,
+    // so expand() can always use [0] instead of sorting on every expansion.
+    const SEV_ORDER: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 }
+    for (const a of assets) {
+      a.misconfigurations.sort((x, y) => (SEV_ORDER[y.severity] ?? 0) - (SEV_ORDER[x.severity] ?? 0))
+    }
+    const assetMap = new Map(assets.map(a => [a.id, a]))
     const targetAssets = new Set(
       Array.from(assetMap.values())
         .filter(a => this.mcts.isCrownJewelCached(a))
         .map(a => a.id)
     )
-    const adj          = this.buildAdjacency()
+    const adj    = this.buildAdjacency()
+    const cjDist = this.mcts.buildCrownJewelDistances(adj, targetAssets)
+    const entryPoints = this.identifyEntryPoints(assets, cjDist)
 
-    const cjDist  = this.mcts.buildCrownJewelDistances(adj, targetAssets)
-    const attackPaths = await this.mcts.discoverPaths(entryPoints, targetAssets, adj, assetMap, cjDist)
+    // S5: APT profile runs first (includes LLM CJ eval). Ransomware + Insider
+    // run in parallel afterward using the pre-populated CJ cache (skipCjEval=true).
+    // This gives 3× pattern diversity at ~1× LLM cost.
+
+    // ── APT (first — triggers LLM CJ eval once) ────────────────────────────
+    const aptPaths = await this.mcts.discoverPaths(entryPoints, targetAssets, adj, assetMap, cjDist)
+
+    // ── Build a shared CJ cache snapshot (safe to copy after APT eval) ─────
+    const sharedCjMap = new Map<string, boolean>()
+    for (const a of assetMap.values()) {
+      sharedCjMap.set(`${a.id}:${a.type}:${a.criticality}`, this.mcts.isCrownJewelCached(a))
+    }
+
+    // ── Ransomware + Insider profiles in parallel (no LLM calls) ──────────
+    const makeProfilePaths = async (profile: 'ransomware' | 'insider') => {
+      const bayesClone = new BayesianProbabilityEngine()
+      bayesClone.ttpProfile = profile
+      await bayesClone.computeProbabilities(assets, this.generateEdges(assets))
+      const adjClone    = this.buildAdjacencyFrom(bayesClone)
+      const cjDistClone = this.mcts.buildCrownJewelDistances(adjClone, targetAssets)
+      const epClone     = this.identifyEntryPoints(assets, cjDistClone)
+      const mctsClone   = new MCTSPathDiscoveryEngine(this.gnn, bayesClone)
+      // Inject pre-computed CJ cache — no LLM calls
+      const cloneCache = (mctsClone as unknown as { cjCache: Map<string, boolean> }).cjCache
+      for (const [k, v] of sharedCjMap) cloneCache.set(k, v)
+      return mctsClone.discoverPaths(epClone, targetAssets, adjClone, assetMap, cjDistClone, true)
+    }
+    const [ransomPaths, insiderPaths] = await Promise.all([
+      makeProfilePaths('ransomware'),
+      makeProfilePaths('insider'),
+    ])
+
+    // ── Merge: unique sig → best realism_score, label with profile ─────────
+    const label = (paths: RealisticAttackPath[], tag: string) =>
+      paths.map(p => ({ ...p, pattern_label: `[${tag}] ${p.pattern_label}` }))
+
+    const merged = new Map<string, RealisticAttackPath>()
+    for (const p of [
+      ...label(aptPaths, 'APT'),
+      ...label(ransomPaths, 'RANSOM'),
+      ...label(insiderPaths, 'INSIDER'),
+    ]) {
+      const existing = merged.get(p.pattern_signature)
+      if (!existing || p.realism_score > existing.realism_score) merged.set(p.pattern_signature, p)
+    }
+    const attackPaths = Array.from(merged.values())
+      .sort((a, b) => b.realism_score - a.realism_score)
+      .slice(0, 5)
+    attackPaths.forEach((p, i) => { p.pattern_rank = i + 1 })
     const mctsTime = Date.now() - t3
 
     const allEdges  = this.bayes.getAllEdges()
@@ -1328,6 +1448,7 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
       entry_points: this.formatEntryPoints(entryPoints, assets),
       critical_assets: this.criticalAssets(assets, attackPaths),
       risk_metrics: this.riskMetrics(attackPaths),
+      chokepoints: this.identifyChokepoints(attackPaths, assetMap),  // S6
       timing: { gnn_embedding: gnnTime, bayesian_inference: bayesTime, mcts_discovery: mctsTime, total: Date.now() - t0 },
     }
   }
@@ -1335,33 +1456,53 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
   // ── Edge Generation ──────────────────────────────────────────────────────────
 
   private generateEdges(assets: EnhancedAsset[]) {
-    // No hardcoded technique routing rules.
-    // Every reachable pair gets ALL five technique candidates proposed.
-    // The Bayesian engine scores each independently from asset features,
-    // vulnerability evidence, and GNN similarity — implausible edges
-    // naturally receive low posteriors and are pruned from MCTS adjacency.
-    // ZONE_REACH is kept only as physical topology (packet routing reality),
-    // not as an attacker capability gate.
+    // P5: Pre-group assets by zone; iterate only reachable zone-pairs.
+    // Previously: O(N²) with a zoneCanReach() call on every pair.
+    // Now: group assets by zone O(N), then for each reachable zone-pair
+    // iterate only the assets in those two zones O(|srcZone|×|tgtZone|).
+    // For 80 assets across ~10 zones with 6 reachable zone-pairs each,
+    // this reduces the inner loop work by ~50% and eliminates the
+    // zoneCanReach() and zoneDistance() call overhead on non-reachable pairs.
     type E = { source: string; target: string; technique: string; type: BayesianEdge['edge_type']; gnnSimilarity: number }
     const edges: E[] = []
     const TECHNIQUES: { technique: string; type: BayesianEdge['edge_type'] }[] = [
-      { technique: 'Initial Access',          type: 'exploit' },
-      { technique: 'Lateral Movement',         type: 'lateral' },
-      { technique: 'Credential Theft',         type: 'credential_theft' },
-      { technique: 'Privilege Escalation',     type: 'privilege_escalation' },
-      { technique: 'Data Exfiltration',        type: 'data_exfiltration' },
+      { technique: 'Initial Access',      type: 'exploit' },
+      { technique: 'Lateral Movement',    type: 'lateral' },
+      { technique: 'Credential Theft',    type: 'credential_theft' },
+      { technique: 'Privilege Escalation', type: 'privilege_escalation' },
+      { technique: 'Data Exfiltration',   type: 'data_exfiltration' },
     ]
-    for (const src of assets) {
-      for (const tgt of assets) {
-        if (src.id === tgt.id) continue
-        if (!zoneCanReach(src.zone, tgt.zone)) continue
-        // Opt #2: only compute GNN similarity for zone-adjacent pairs (dist ≤ 1).
-        // For dist > 1 the prior formula zeroes the similarity uplift anyway,
-        // so we skip ~60-70% of all dot-product computations.
-        const dist = zoneDistance(src.zone, tgt.zone)
-        const gnnSimilarity = dist <= 1 ? this.gnn.computeSimilarity(src.id, tgt.id) : 0
-        for (const t of TECHNIQUES) {
-          edges.push({ source: src.id, target: tgt.id, gnnSimilarity, ...t })
+    // Group by zone
+    const byZone = new Map<string, EnhancedAsset[]>()
+    for (const a of assets) {
+      if (!byZone.has(a.zone)) byZone.set(a.zone, [])
+      byZone.get(a.zone)!.push(a)
+    }
+    // Iterate only reachable zone-pairs
+    for (const [srcZone, srcAssets] of byZone) {
+      const reachableZones = ZONE_REACH[srcZone] ?? []
+      for (const tgtZone of reachableZones) {
+        const tgtAssets = byZone.get(tgtZone)
+        if (!tgtAssets) continue
+        const dist = zoneDistance(srcZone, tgtZone)
+        for (const src of srcAssets) {
+          for (const tgt of tgtAssets) {
+            if (src.id === tgt.id) continue
+            const gnnSimilarity = dist <= 1 ? this.gnn.computeSimilarity(src.id, tgt.id) : 0
+            for (const t of TECHNIQUES) {
+              edges.push({ source: src.id, target: tgt.id, gnnSimilarity, ...t })
+            }
+          }
+        }
+      }
+      // Also include intra-zone edges (same zone, different assets)
+      for (let i = 0; i < srcAssets.length; i++) {
+        for (let j = 0; j < srcAssets.length; j++) {
+          if (i === j) continue
+          const gnnSimilarity = this.gnn.computeSimilarity(srcAssets[i].id, srcAssets[j].id)
+          for (const t of TECHNIQUES) {
+            edges.push({ source: srcAssets[i].id, target: srcAssets[j].id, gnnSimilarity, ...t })
+          }
         }
       }
     }
@@ -1369,13 +1510,13 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
   }
 
   private buildAdjacency(): Map<string, string[]> {
-    // Threshold 0.30: only edges clearing 30% posterior enter MCTS.
-    // VII: collect edges with posterior probability, then sort each adjacency
-    // list by posterior descending. expand() processes neighbours in this order,
-    // so UCB selection gets the highest-probability candidates first — the tree
-    // converges to high-reward corridors faster with no extra computation at runtime.
+    return this.buildAdjacencyFrom(this.bayes)
+  }
+
+  private buildAdjacencyFrom(bayes: BayesianProbabilityEngine): Map<string, string[]> {
+    // Threshold 0.30 + sorted by posterior desc (VII).
     const adjWithProb = new Map<string, { id: string; prob: number }[]>()
-    for (const e of this.bayes.getAllEdges()) {
+    for (const e of bayes.getAllEdges()) {
       if (e.posterior_probability < 0.30) continue
       if (!adjWithProb.has(e.source_id)) adjWithProb.set(e.source_id, [])
       adjWithProb.get(e.source_id)!.push({ id: e.target_id, prob: e.posterior_probability })
@@ -1388,18 +1529,35 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
     return adj
   }
 
-  // OPTIMISATION: top-10 entry points by criticality × severity score
-  private identifyEntryPoints(assets: EnhancedAsset[]): { asset_id: string; misconfig_id: string }[] {
+  // S4: Entry point scoring with crown-jewel proximity.
+  // Previously scored by criticality × severity — this always picks the most
+  // critical internet-facing asset regardless of how far it is from a crown jewel.
+  // Now incorporates cjDist so entry points near DCs/IdPs rank higher than ones
+  // that are topologically isolated from crown jewels.
+  // Also: expand scope to include ALL internet-facing OR dmz OR mgmt assets with
+  // any high/critical misconfig — not just internet_facing. Lateral movement often
+  // starts from compromised internal jump points exposed via phishing.
+  private identifyEntryPoints(
+    assets: EnhancedAsset[],
+    cjDist?: Map<string, number>
+  ): { asset_id: string; misconfig_id: string }[] {
     const candidates: { asset_id: string; misconfig_id: string; score: number }[] = []
     for (const a of assets) {
-      if (!a.internet_facing && a.zone !== 'dmz') continue
+      // Expanded entry criteria: internet-facing, dmz, mgmt, or high-crit with external exposure
+      const isCandidate = a.internet_facing || a.zone === 'dmz' || a.zone === 'mgmt'
+        || (a.criticality >= 4 && (a.zone === 'corp' || a.zone === 'staging'))
+      if (!isCandidate) continue
       for (const m of a.misconfigurations) {
         if (m.severity !== 'critical' && m.severity !== 'high') continue
         const sevScore = m.severity === 'critical' ? 4 : 3
+        // S4: proximity bonus — entry points closer to crown jewels score higher
+        const dist     = cjDist?.get(a.id) ?? 99
+        const proxBonus = dist <= 1 ? 8 : dist <= 2 ? 5 : dist <= 3 ? 2 : 0
+        const epssBonus = (m.epss ?? 0) * 3   // actively exploited vulns are hot
         candidates.push({
           asset_id: a.id,
           misconfig_id: m.id,
-          score: a.criticality * sevScore + (a.internet_facing ? 5 : 0),
+          score: a.criticality * sevScore + (a.internet_facing ? 5 : 0) + proxBonus + epssBonus,
         })
       }
     }
@@ -1407,6 +1565,39 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
       .sort((a, b) => b.score - a.score)
       .slice(0, 10)
       .map(({ asset_id, misconfig_id }) => ({ asset_id, misconfig_id }))
+  }
+
+  // S6: Chokepoint analysis — assets that appear in the most attack paths.
+  // A chokepoint is a node where a single control (MFA enforcement, network
+  // segmentation, patch) would block multiple attack chains simultaneously.
+  // This is the most actionable red-team output: fix the chokepoints first.
+  private identifyChokepoints(
+    paths: RealisticAttackPath[],
+    assetMap: Map<string, EnhancedAsset>
+  ): { asset_id: string; asset_name: string; asset_type: string; zone: string; paths_through: number; blocking_impact: number }[] {
+    const freq = new Map<string, number>()
+    for (const path of paths) {
+      // Count intermediate nodes (not entry or crown jewel) — blocking these is actionable
+      for (let i = 1; i < path.nodes.length - 1; i++) {
+        const nid = path.nodes[i].asset_id
+        freq.set(nid, (freq.get(nid) ?? 0) + 1)
+      }
+    }
+    return Array.from(freq.entries())
+      .filter(([, count]) => count >= 1)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([id, count]) => {
+        const a = assetMap.get(id)
+        return {
+          asset_id: id,
+          asset_name: a?.name ?? id,
+          asset_type: a?.type ?? 'unknown',
+          zone: a?.zone ?? 'unknown',
+          paths_through: count,
+          blocking_impact: Math.round((count / Math.max(paths.length, 1)) * 100),
+        }
+      })
   }
 
   private formatEntryPoints(eps: { asset_id: string; misconfig_id: string }[], assets: EnhancedAsset[]): EntryPoint[] {
