@@ -1086,7 +1086,17 @@ class MCTSPathDiscoveryEngine {
         }
       }
       if (llmCandidates.length > 0) {
-        await Promise.all(llmCandidates.map(a => this.isTerminalAssetLLM(a)))
+        // Network-safe: if LLM is unreachable fall back to criticality heuristic
+        await Promise.all(llmCandidates.map(async a => {
+          try {
+            await this.isTerminalAssetLLM(a)
+          } catch {
+            const fallbackCJ = a.criticality === 5 &&
+              ['backup_server','secrets_manager','hsm','bastion'].includes(a.type)
+            this.cjCache.set(this.cjKey(a), fallbackCJ)
+            console.log(`[CROWN JEWEL] ${a.name}: ${fallbackCJ ? '\u{1F451}' : '\u274C'} (heuristic fallback)`)
+          }
+        }))
       }
       const crowns = Array.from(this.cjCache.values()).filter(Boolean).length
       console.log(
