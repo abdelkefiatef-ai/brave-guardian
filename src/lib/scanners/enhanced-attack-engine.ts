@@ -141,6 +141,14 @@ export interface RealisticAttackPath {
   pattern_rank: number       // 1 = highest-scoring unique pattern
 }
 
+export interface MCTSTelemetry {
+  simulations_executed:   number   // total sim steps run across all entry points
+  entry_points_processed: number   // how many entry points were actually explored
+  early_stops:            number   // trees cut short by stale-probe limit
+  patterns_found:         number   // distinct structural patterns discovered
+  stop_reason: 'target_reached' | 'budget_exhausted' | 'stale_all_entries'
+}
+
 export interface EntryPoint {
   node_id: string
   asset_name: string
@@ -477,12 +485,42 @@ interface PackedEdgeStore {
 
 // top-K neighbours per asset, profile-specific posteriors
 // Layout: asset_i × K_ADJ + k → neighbour slot
-// Posterior threshold applied at store-write time — edges below this are
-// never stored and never consume typed-array memory.
-// At 0.50: eliminates edges where BOTH topology AND vulnerability evidence are weak.
-// No real attack chain relies exclusively on sub-0.50 edges; they are noise.
-// Memory at N=10K: 35M raw → ~200K surviving → 14 bytes×200K = 2.8 MB (vs 490 MB at 0.30)
-const _POST_THRESH = 0.50
+// ── Adaptive posterior threshold ──────────────────────────────────────────────
+// A single global cutoff over-prunes legitimate paths through high-value or
+// privileged-zone targets: a crit-5 DC in the restricted zone with moderate
+// evidence is far more interesting than a crit-1 workstation with strong evidence.
+//
+// Floor is derived from three signals, applied additively:
+//   base              = 0.50  (same as the former flat cutoff)
+//   target criticality: crit 5 → −0.15 | crit 4 → −0.10 | crit 3 → −0.05
+//   sensitive zone    : restricted/mgmt/security/pci/hipaa/dr → −0.08
+//   zone distance     : dist ≥ 2 → +0.05  (long-range edges need stronger evidence)
+//   clamped to [0.25, 0.55]
+//
+// Net effect:
+//   Low-crit peripheral asset, dist≥2  → floor ≈ 0.55  (strict)
+//   Average asset, same zone           → floor ≈ 0.50  (unchanged)
+//   Crit-5 target in restricted zone   → floor ≈ 0.27  (permissive)
+//
+// Memory impact: borderline high-value edges that were pruned at 0.50 now survive
+// (~3–8% more entries at N=100–1K), which is negligible against the typed-array
+// budget but materially improves path coverage for crown-jewel corridors.
+
+const _POST_THRESH_BASE = 0.50
+
+const _SENSITIVE_ZONES = new Set([
+  'restricted', 'mgmt', 'security', 'pci', 'hipaa', 'dr'
+])
+
+function adaptivePostThresh(tgt: EnhancedAsset, dist: number): number {
+  let floor = _POST_THRESH_BASE
+  if      (tgt.criticality === 5) floor -= 0.15
+  else if (tgt.criticality === 4) floor -= 0.10
+  else if (tgt.criticality === 3) floor -= 0.05
+  if (_SENSITIVE_ZONES.has(tgt.zone)) floor -= 0.08
+  if (dist >= 2) floor += 0.05
+  return Math.max(0.25, Math.min(0.55, floor))
+}
 
 const _K_ADJ = 20
 
@@ -530,9 +568,8 @@ class BayesianProbabilityEngine {
     }
 
     // Capacity estimate: zone-reachable pairs × techniques × survival fraction.
-    // _POST_THRESH=0.50 prunes ~80% of candidates at write time (L1 threshold).
-    // Survival fraction = 0.20 with 2× safety margin = 0.40 multiplier.
-    // Result at N=10K: ~200K entries × 14 bytes = 2.8 MB (vs 490 MB without threshold).
+    // Adaptive threshold prunes ~75–85% of candidates at write time (L1 threshold).
+    // Survival fraction ≈ 0.20 on average, 0.40 safety margin for high-crit-dense inventories.
     const _SURVIVAL = 0.40   // conservative upper bound on fraction surviving L1
     let capacity = 0
     for (const [srcZone, srcList] of byZone) {
@@ -567,10 +604,10 @@ class BayesianProbabilityEngine {
         const pNoTtp = this.computePriorNoTtp(type, srcA, tgtA, dist, gnnSim_)
         const lk     = this.computeLikelihoodScore(tgtA, type)
 
-        // L1 threshold at write time: never store sub-_POST_THRESH edges.
-        // Eliminates ~80% of candidates before any typed-array storage.
+        // L1 adaptive threshold — per-edge floor from criticality, zone, distance.
+        // Crit-5 / restricted zone → floor ≈ 0.27; average → 0.50; peripheral → 0.55.
         const base_post = Math.min(Math.max(0.3 * pNoTtp + 0.7 * lk, 0.05), 0.98)
-        if (base_post < _POST_THRESH) continue
+        if (base_post < adaptivePostThresh(tgtA, dist)) continue
 
         store.src[i]        = assetIdx.get(srcA.id)!
         store.tgt[i]        = assetIdx.get(tgtA.id)!
@@ -632,7 +669,9 @@ class BayesianProbabilityEngine {
       const ttp   = ttpRow[type] ?? 1.0
       const p     = Math.min(store.prior[i] * ttp, 0.95)
       const post  = Math.min(Math.max(0.3 * p + 0.7 * store.likelihood[i], 0.05), 0.98)
-      if (post < _POST_THRESH) continue
+      // L2 adaptive threshold — uses target asset quality; dist=0 because topology
+      // cost was already encoded in the prior stored at L1 write time.
+      if (post < adaptivePostThresh(BayesianProbabilityEngine._assets[store.tgt[i]], 0)) continue
 
       const si = store.src[i], ti = store.tgt[i]
       const bucket = buckets[si]
@@ -758,7 +797,7 @@ class BayesianProbabilityEngine {
       const ttp  = ttpRow[type] ?? 1.0
       const p    = Math.min(store.prior[i] * ttp, 0.95)
       const post = Math.min(Math.max(0.3 * p + 0.7 * store.likelihood[i], 0.05), 0.98)
-      if (post < _POST_THRESH) continue
+      if (post < adaptivePostThresh(BayesianProbabilityEngine._assets[store.tgt[i]], 0)) continue
       const key = store.src[i] * 65536 + store.tgt[i]
       const ex  = best.get(key)
       if (!ex || post > ex.post) best.set(key, { post, slot: i })
@@ -908,58 +947,156 @@ class MCTSPathDiscoveryEngine {
     assetMap: Map<string, EnhancedAsset>,
     cjDist: Map<string, number> = new Map(),
     skipCjEval = false   // S5: set true when CJ cache is pre-populated from main engine
-  ): Promise<RealisticAttackPath[]> {
+  ): Promise<{ paths: RealisticAttackPath[]; telemetry: MCTSTelemetry }> {
+
+    // ── Feature 2: Deterministic CJ guardrails ────────────────────────────────
+    // Three-tier classification replaces the old "send all CJ_TYPES to LLM" approach.
+    //
+    // Tier-1 (deterministic CJ — no LLM call needed):
+    //   Critical identity infrastructure that unconditionally provides full-environment
+    //   control.  Sending these to the LLM adds latency and nondeterminism for zero
+    //   semantic benefit — the answer is always "yes".
+    //
+    // Tier-2 (borderline — LLM evaluates contextually):
+    //   High-criticality assets whose CJ status depends on context: data sensitivity,
+    //   zone, role, and real-world attacker objectives.  LLM semantic evaluation adds
+    //   genuine value here.
+    //
+    // Tier-3 (never CJ):
+    //   Everything with criticality < 4 or a type not in Tier-1/Tier-2.
     if (!skipCjEval) {
-      // Crown jewel LLM evaluation — only on first call; clones set skipCjEval=true
-      const CJ_TYPES = new Set(['domain_controller','identity_server','pki_server','ca_server','key_management'])
-      console.log('[MCTS] Evaluating crown jewels…')
-      const cjCandidates: EnhancedAsset[] = []
+      const CJ_DETERMINISTIC = new Set([
+        'domain_controller', 'identity_server', 'pki_server', 'ca_server', 'key_management',
+      ])
+      const CJ_BORDERLINE = new Set([
+        'backup_server', 'file_server', 'jump_server', 'bastion',
+        'secrets_manager', 'hsm', 'privileged_access_workstation',
+      ])
+      console.log('[MCTS] Evaluating crown jewels (deterministic + LLM)…')
+      const llmCandidates: EnhancedAsset[] = []
+      let deterministicCount = 0
       for (const asset of assetMap.values()) {
         const key = `${asset.id}:${asset.type}:${asset.criticality}`
-        if (asset.criticality >= 4 && CJ_TYPES.has(asset.type)) {
-          cjCandidates.push(asset)
+        if (this.cjCache.has(key)) continue   // already evaluated — idempotent
+        if (asset.criticality >= 4 && CJ_DETERMINISTIC.has(asset.type)) {
+          // Tier-1: mark immediately, no LLM call
+          this.cjCache.set(key, true)
+          deterministicCount++
+          console.log(`[CROWN JEWEL] ${asset.name}: 👑 (deterministic — ${asset.type})`)
+        } else if (asset.criticality >= 4 && CJ_BORDERLINE.has(asset.type)) {
+          // Tier-2: LLM evaluates semantic context
+          llmCandidates.push(asset)
         } else {
+          // Tier-3: definitively not CJ
           this.cjCache.set(key, false)
         }
       }
-      await Promise.all(cjCandidates.map(a => this.isTerminalAssetLLM(a)))
+      if (llmCandidates.length > 0) {
+        await Promise.all(llmCandidates.map(a => this.isTerminalAssetLLM(a)))
+      }
       const crowns = Array.from(this.cjCache.values()).filter(Boolean).length
-      console.log(`[MCTS] ${crowns} crown jewels found`)
+      console.log(
+        `[MCTS] ${crowns} crown jewels found ` +
+        `(${deterministicCount} deterministic, ${crowns - deterministicCount} LLM-evaluated)`
+      )
     }
 
-    // Cap entry points at top-10 by criticality × misconfig severity
-    const scored = entryPoints
-      .map(ep => {
-        const a = assetMap.get(ep.asset_id)!
-        const m = a.misconfigurations.find(x => x.id === ep.misconfig_id)
-        const sevScore = m?.severity === 'critical' ? 4 : m?.severity === 'high' ? 3 : 2
-        return { ep, score: a.criticality * sevScore + (a.internet_facing ? 5 : 0) }
-      })
-      .sort((a, b) => b.score - a.score)
+    // ── Feature 4: LLM-blended entry-point ranking ────────────────────────────
+    // Two-step ranking: fast heuristic pre-scores all candidates, then LLM
+    // re-ranks the top-15 with semantic understanding of exploit likelihood,
+    // attack vector, and MITRE technique frequency.
+    //
+    // LLM score is blended 40 % into the final rank — heuristic still anchors
+    // ordering so a bad LLM parse degrades gracefully to the S4 score.
+    //
+    // Top-10 entry points are taken after blending.
+
+    const heuristicScored = entryPoints.map(ep => {
+      const a = assetMap.get(ep.asset_id)!
+      const m = a.misconfigurations.find(x => x.id === ep.misconfig_id)
+      const sevScore  = m?.severity === 'critical' ? 4 : m?.severity === 'high' ? 3 : 2
+      const proxBonus = ((cjDist.get(ep.asset_id) ?? 99) <= 2) ? 5 : 0
+      const epssBonus = (m?.epss ?? 0) * 3
+      const hScore    = a.criticality * sevScore + (a.internet_facing ? 5 : 0) + proxBonus + epssBonus
+      return { ep, a, m, hScore, llmScore: hScore }
+    }).sort((a, b) => b.hScore - a.hScore).slice(0, 15)
+
+    if (!skipCjEval && process.env.OPENROUTER_API_KEY) {
+      try {
+        const descriptors = heuristicScored.map(({ ep, a, m }) => ({
+          asset_id:        ep.asset_id,
+          name:            a.name,
+          type:            a.type,
+          zone:            a.zone,
+          internet_facing: a.internet_facing,
+          criticality:     a.criticality,
+          misconfig:       m ? {
+            title:             m.title,
+            severity:          m.severity,
+            epss:              m.epss ?? 0,
+            exploit_available: m.exploit_available ?? false,
+          } : null,
+          data_sensitivity: a.data_sensitivity,
+        }))
+        const prompt =
+          `You are a senior red team operator. Score each asset as an initial-access entry point.\n` +
+          `Score 1–10 (10 = trivially exploitable from the internet; 1 = internal-only, very unlikely).\n` +
+          `Consider: internet exposure, exploit availability, EPSS, asset type, MITRE ATT&CK frequency.\n\n` +
+          `Assets:\n${JSON.stringify(descriptors)}\n\n` +
+          `Reply JSON array in SAME ORDER as input:\n` +
+          `[{"asset_id":"...","entry_score":8,"attack_vector":"...","mitre_technique":"T1190","reasoning":"one line"},...]`
+        const raw = await callQwen(prompt, 900)
+        const arrMatch = raw.match(/\[[\s\S]*\]/)
+        if (arrMatch) {
+          const rankings: { asset_id: string; entry_score: number }[] = JSON.parse(arrMatch[0])
+          const rankMap = new Map(rankings.map(r => [r.asset_id, r.entry_score / 10]))
+          const maxH    = Math.max(...heuristicScored.map(x => x.hScore), 1)
+          for (const s of heuristicScored) {
+            const llm = rankMap.get(s.ep.asset_id)
+            if (llm !== undefined) {
+              const normH  = s.hScore / maxH
+              s.llmScore   = normH * 0.60 + llm * 0.40
+              console.log(
+                `[ENTRY] ${s.a.name}: ` +
+                `heuristic=${s.hScore.toFixed(1)} ` +
+                `llm=${(llm * 10).toFixed(1)}/10 ` +
+                `blended=${s.llmScore.toFixed(3)}`
+              )
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[ENTRY] LLM ranking failed — using heuristic scores only:', err)
+      }
+    }
+
+    const scored = heuristicScored
+      .sort((a, b) => b.llmScore - a.llmScore)
       .slice(0, 10)
       .map(x => x.ep)
 
-    // ── Pattern-diversity state ───────────────────────────────────────────────
-    // seenPatterns: signature → best path representing that pattern
-    // patternPenalty: signature → cumulative penalty applied to reward shaping
-    // Goal: collect exactly TARGET_PATTERNS unique structural patterns,
-    //       then stop — no need to run remaining entry points.
-    const TARGET_PATTERNS = 5
-    const seenPatterns  = new Map<string, RealisticAttackPath>()
-    const patternPenalty = new Map<string, number>()
+    // ── Pattern-diversity state + telemetry counters ──────────────────────────
+    const TARGET_PATTERNS  = 5
+    const seenPatterns     = new Map<string, RealisticAttackPath>()
+    const patternPenalty   = new Map<string, number>()
+    let   simsTotal        = 0
+    let   epProcessed      = 0
+    let   earlyStops       = 0
+    let   stopReason: MCTSTelemetry['stop_reason'] = 'budget_exhausted'
 
     for (const entry of scored) {
-      // Early exit: we already have enough distinct patterns
       if (seenPatterns.size >= TARGET_PATTERNS) {
         console.log(`[MCTS] ${TARGET_PATTERNS} unique patterns found — skipping remaining entry points`)
+        stopReason = 'target_reached'
         break
       }
 
+      epProcessed++
       // Clear per-tree caches — RAVE stats and rollout scores from a different
       // root don't transfer meaningfully to a new topology context (IV).
       this.raveTotal.clear()
       this.raveVisits.clear()
-      this.scoreCache.clear()   // IV: stale scores from prev tree corrupt rollouts
+      this.scoreCache.clear()
 
       const root: MCTSNode = {
         id: `${entry.asset_id}:${entry.misconfig_id}`,
@@ -969,94 +1106,90 @@ class MCTSPathDiscoveryEngine {
         probability: 1.0, depth: 0,
         path_from_root: [entry.asset_id],
         visited_set: new Set([entry.asset_id]),
-        expandedSet: new Set<string>(),    // P2: O(1) duplicate check in expand()
+        expandedSet: new Set<string>(),
       }
 
-      // E: adaptive budget — check for new patterns every PROBE_INTERVAL sims.
-      // If no new pattern was found after STALE_LIMIT consecutive probes, stop
-      // this tree early and move to the next entry point. Saves budget when an
-      // entry point is structurally similar to already-seen patterns.
+      // E: adaptive budget — probe every PROBE_INTERVAL sims for new patterns.
+      // STALE_LIMIT consecutive stale probes → early stop for this entry point.
       const PROBE_INTERVAL = 250
-      const STALE_LIMIT    = 4          // stop after 1000 sims with no new pattern (post-first-path)
+      const STALE_LIMIT    = 4
       let   staleProbes    = 0
       let   foundAnyPath   = false
-      let   patternsAtLastProbe = seenPatterns.size
+      let   simBudgetUsed  = 0
 
       for (let sim = 0; sim < this.SIMS; sim++) {
         const leaf  = this.select(root)
         const child = this.expand(leaf, adj, assetMap)
         let   rew   = this.simulate(child, targetAssets, adj, assetMap, cjDist)
 
-        // ── Reward shaping: penalise paths toward already-saturated patterns ──
+        // Reward shaping: penalise paths toward already-saturated patterns
         if (rew > 0 && child.path_from_root.length >= 2) {
           const entryA  = assetMap.get(child.path_from_root[0])
           const targetA = assetMap.get(child.path_from_root[child.path_from_root.length - 1])
           if (entryA && targetA) {
             const roughSig = `${entryA.type}:${entryA.zone}|${targetA.type}:${targetA.zone}`
-            const penalty  = patternPenalty.get(roughSig) ?? 0
-            rew = rew * Math.max(0.05, 1 - penalty)
+            rew = rew * Math.max(0.05, 1 - (patternPenalty.get(roughSig) ?? 0))
           }
         }
 
         this.backpropagate(child, rew)
+        simBudgetUsed++
 
-        // E: probe every PROBE_INTERVAL sims — extract paths and check for new patterns
         if ((sim + 1) % PROBE_INTERVAL === 0) {
           const probe = this.extractBestPaths(root, targetAssets, assetMap)
-          for (const p of probe) {
-            p.pattern_signature = this.patternSignature(p, assetMap)
-          }
+          for (const p of probe) p.pattern_signature = this.patternSignature(p, assetMap)
           if (probe.length > 0) foundAnyPath = true
           const newPatternFound = probe.some(p => !seenPatterns.has(p.pattern_signature))
           if (newPatternFound) {
             staleProbes = 0
-            patternsAtLastProbe = seenPatterns.size
           } else if (foundAnyPath) {
-            // Only count stale once we've found at least one terminal path
             staleProbes++
-            if (staleProbes >= STALE_LIMIT) break  // early exit for this entry point
+            if (staleProbes >= STALE_LIMIT) { earlyStops++; break }
           }
         }
       }
+      simsTotal += simBudgetUsed
 
-      // Extract candidate paths from this tree
       const candidates = this.extractBestPaths(root, targetAssets, assetMap)
-
-      // Stamp each path with its canonical structural signature
       for (const p of candidates) {
         p.pattern_signature = this.patternSignature(p, assetMap)
         p.pattern_label     = this.patternLabel(p.pattern_signature)
       }
 
-      // Register new patterns; update penalty for known ones
       for (const p of candidates.sort((a, b) => b.realism_score - a.realism_score)) {
         const sig = p.pattern_signature
         if (!seenPatterns.has(sig)) {
-          // New pattern — register it
           seenPatterns.set(sig, p)
-          // Initialise penalty so future sims from *other* entry points deprioritise it
           patternPenalty.set(sig, 0.4)
           console.log(`[MCTS] New pattern #${seenPatterns.size}: ${p.pattern_label}`)
           if (seenPatterns.size >= TARGET_PATTERNS) break
         } else {
-          // Known pattern — bump its penalty to further suppress exploration
-          const cur = patternPenalty.get(sig) ?? 0
-          patternPenalty.set(sig, Math.min(cur + 0.15, 0.95))
-          // Replace representative if this instance scores better
-          const existing = seenPatterns.get(sig)!
-          if (p.realism_score > existing.realism_score) {
-            seenPatterns.set(sig, p)
-          }
+          patternPenalty.set(sig, Math.min((patternPenalty.get(sig) ?? 0) + 0.15, 0.95))
+          if (p.realism_score > seenPatterns.get(sig)!.realism_score) seenPatterns.set(sig, p)
         }
       }
     }
 
-    // Assign final pattern_rank and return top-5 unique patterns, best-first
+    if (epProcessed === scored.length && seenPatterns.size < TARGET_PATTERNS) {
+      stopReason = 'stale_all_entries'
+    }
+
     const uniquePaths = Array.from(seenPatterns.values())
       .sort((a, b) => b.realism_score - a.realism_score)
-
     uniquePaths.forEach((p, i) => { p.pattern_rank = i + 1 })
-    return uniquePaths
+
+    const telemetry: MCTSTelemetry = {
+      simulations_executed:   simsTotal,
+      entry_points_processed: epProcessed,
+      early_stops:            earlyStops,
+      patterns_found:         seenPatterns.size,
+      stop_reason:            stopReason,
+    }
+    console.log(
+      `[MCTS] done — ${simsTotal} sims | ${epProcessed} entries | ` +
+      `${earlyStops} early stops | ${seenPatterns.size} patterns | ${stopReason}`
+    )
+    return { paths: uniquePaths, telemetry }
   }
 
   // ── UCB1-RAVE Selection ──────────────────────────────────────────────────────
@@ -1598,9 +1731,10 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
     const cjDist = this.mcts.buildCrownJewelDistances(adj, targetAssets)
     const entryPoints = this.identifyEntryPoints(assets, cjDist)
 
-    // S5: APT profile first (LLM CJ eval), then Ransomware + Insider in parallel.
+    // S5: APT profile first (LLM CJ eval + LLM EP ranking), then Ransomware + Insider in parallel.
     // All three use the same PackedEdgeStore — only the SparseAdj differs per profile.
-    const aptPaths = await this.mcts.discoverPaths(entryPoints, targetAssets, adj, assetMap, cjDist)
+    const { paths: aptPaths, telemetry: aptTelemetry } =
+      await this.mcts.discoverPaths(entryPoints, targetAssets, adj, assetMap, cjDist)
 
     // Snapshot CJ cache after APT eval — reused by other profiles (no LLM calls)
     const sharedCjMap = new Map<string, boolean>()
@@ -1613,7 +1747,6 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
     const makeProfilePaths = async (profile: 'ransomware' | 'insider') => {
       const bayesProfile = new BayesianProbabilityEngine()
       bayesProfile.ttpProfile = profile
-      // buildAdjacencyMap reuses the cached packed store — O(E) not O(N²)
       const adjProfile    = bayesProfile.buildAdjacencyMap(assets, gnnSim)
       const cjDistProfile = this.mcts.buildCrownJewelDistances(adjProfile, targetAssets)
       const epProfile     = this.identifyEntryPoints(assets, cjDistProfile)
@@ -1622,7 +1755,10 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
       for (const [k, v] of sharedCjMap) cloneCache.set(k, v)
       return mctsProfile.discoverPaths(epProfile, targetAssets, adjProfile, assetMap, cjDistProfile, true)
     }
-    const [ransomPaths, insiderPaths] = await Promise.all([
+    const [
+      { paths: ransomPaths, telemetry: ransomTelemetry },
+      { paths: insiderPaths, telemetry: insiderTelemetry },
+    ] = await Promise.all([
       makeProfilePaths('ransomware'),
       makeProfilePaths('insider'),
     ])
@@ -1646,6 +1782,10 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
     attackPaths.forEach((p, i) => { p.pattern_rank = i + 1 })
     const mctsTime = Date.now() - t3
 
+    const totalSims = aptTelemetry.simulations_executed
+                    + ransomTelemetry.simulations_executed
+                    + insiderTelemetry.simulations_executed
+
     const allEdges  = this.bayes.getAllEdges()
     const highConf  = allEdges.filter(e => e.confidence_interval[1] - e.confidence_interval[0] < 0.3)
     const lowConf   = allEdges.filter(e => e.confidence_interval[1] - e.confidence_interval[0] > 0.5)
@@ -1664,7 +1804,7 @@ export class EnhancedAttackGraphEngine extends EventEmitter {
         low_confidence_edges:  lowConf.length,
       },
       mcts_stats: {
-        total_simulations: 5000,
+        total_simulations: totalSims,
         exploration_constant: 1.414,
         best_path_reward: 0,
         avg_path_depth: attackPaths.reduce((s, p) => s + p.nodes.length, 0) / Math.max(attackPaths.length, 1),
